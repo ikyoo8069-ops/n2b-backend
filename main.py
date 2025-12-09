@@ -67,7 +67,7 @@ async def match(request: MatchRequest):
         client = anthropic.Anthropic(api_key=request.apiKey)
         n2b = request.n2bAnalysis
         
-        # 1단계: 웹검색으로 현재 모집중인 정부지원사업 찾기
+        # 실시간 웹검색으로 정부지원사업 찾기
         search_message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4000,
@@ -86,57 +86,50 @@ N2B 분석:
 - 키워드: {', '.join(n2b.get('keywords', []))}
 
 bizinfo.go.kr 또는 k-startup.go.kr에서 현재 모집중인 관련 정부지원사업을 검색해주세요.
-검색어 예시: "2025년 {n2b.get('keywords', ['중소기업'])[0]} 정부지원사업 모집"
 
 검색 후 다음 JSON 형식으로 답변해주세요:
 {{
     "matches": [
         {{
             "title": "사업명",
-            "category": "분야 (기술/창업/금융/인력/수출/내수/경영)",
+            "category": "분야",
             "agency": "주관기관",
-            "deadline": "마감일 (예: 2025-12-31)",
+            "deadline": "마감일",
             "url": "상세정보 링크",
             "score": 9,
-            "reason": "추천 이유 (2-3문장)"
+            "reason": "추천 이유"
         }}
     ]
 }}
 
-가장 적합한 3개만 추천해주세요. 마감된 사업은 제외하고, 현재 모집중인 사업만 포함해주세요.
+가장 적합한 3개만 추천해주세요. 마감된 사업은 제외하세요.
 """
             }]
         )
         
-        # 응답에서 텍스트 추출
         result_text = ""
         for block in search_message.content:
             if hasattr(block, 'text'):
                 result_text += block.text
         
-        # JSON 파싱
         result_text = result_text.replace("```json", "").replace("```", "").strip()
         
-        # JSON 부분만 추출
         start_idx = result_text.find('{')
         end_idx = result_text.rfind('}') + 1
         if start_idx != -1 and end_idx > start_idx:
             json_str = result_text[start_idx:end_idx]
             result = json.loads(json_str)
         else:
-            # JSON을 찾지 못한 경우 기본 응답
             result = {
-                "matches": [
-                    {
-                        "title": "검색 결과를 처리할 수 없습니다",
-                        "category": "기타",
-                        "agency": "-",
-                        "deadline": "-",
-                        "url": "https://www.bizinfo.go.kr",
-                        "score": 0,
-                        "reason": "다시 시도해주세요."
-                    }
-                ]
+                "matches": [{
+                    "title": "검색 결과를 처리할 수 없습니다",
+                    "category": "기타",
+                    "agency": "-",
+                    "deadline": "-",
+                    "url": "https://www.bizinfo.go.kr",
+                    "score": 0,
+                    "reason": "다시 시도해주세요."
+                }]
             }
         
         return result
