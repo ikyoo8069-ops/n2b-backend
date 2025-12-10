@@ -24,7 +24,7 @@ app.add_middleware(
 POLICIES = []
 
 # GitHub Raw URL
-CSV_URL = "https://raw.githubusercontent.com/ikyoo8069-ops/n2b-backend/main/중소벤처기업부_중소기업지원사업목록_20250331.csv"
+CSV_URL = "https://raw.githubusercontent.com/ikyoo8069-ops/n2b-backend/main/policies.csv"
 
 def load_policies():
     """GitHub에서 CSV 다운로드하여 로드"""
