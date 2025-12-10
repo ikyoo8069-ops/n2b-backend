@@ -24,7 +24,7 @@ POLICIES = []
 
 def load_policies():
     global POLICIES
-    csv_path = os.path.join(os.path.dirname(__file__), "policies.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "중소벤처기업부_중소기업지원사업목록_20250331.csv")
     
     try:
         with open(csv_path, "r", encoding="utf-8-sig") as f:
