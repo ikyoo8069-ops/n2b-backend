@@ -1,12 +1,9 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional, List
 import anthropic
 import json
-import csv
-import io
-import urllib.request
-from typing import Optional
 
 app = FastAPI()
 
@@ -18,44 +15,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================
-# CSV 파일에서 정책 데이터 로드
-# ============================================
-POLICIES = []
+# 한국 시/도 목록
+REGIONS = [
+    "전체", "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+    "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"
+]
 
-# GitHub Raw URL
-CSV_URL = "https://raw.githubusercontent.com/ikyoo8069-ops/n2b-backend/main/policies.csv"
-
-def load_policies():
-    """GitHub에서 CSV 다운로드하여 로드"""
-    global POLICIES
-    try:
-        with urllib.request.urlopen(CSV_URL, timeout=60) as response:
-            content = response.read().decode('cp949', errors='ignore')
-            reader = csv.DictReader(io.StringIO(content))
-            POLICIES = []
-            for row in reader:
-                POLICIES.append({
-                    "id": row.get("번호", ""),
-                    "category": row.get("분야", ""),
-                    "title": row.get("사업명", ""),
-                    "start_date": row.get("신청시작일", ""),
-                    "end_date": row.get("신청종료일", ""),
-                    "agency": row.get("소관기관", ""),
-                    "executor": row.get("수행기관", ""),
-                    "reg_date": row.get("등록일자", ""),
-                    "url": row.get("상세URL", "")
-                })
-            print(f"✅ {len(POLICIES)}개 정책 데이터 로드 완료!")
-    except Exception as e:
-        print(f"❌ CSV 로드 실패: {e}")
-
-# 서버 시작 시 데이터 로드
-load_policies()
-
-# ============================================
-# 요청/응답 모델
-# ============================================
 class AnalyzeRequest(BaseModel):
     apiKey: str
     proposalText: str
@@ -63,61 +28,20 @@ class AnalyzeRequest(BaseModel):
 class MatchRequest(BaseModel):
     apiKey: str
     n2bAnalysis: dict
+    region: Optional[str] = "전체"
 
-class SearchRequest(BaseModel):
-    keyword: str
-
-# ============================================
-# 정책 검색 함수
-# ============================================
-def search_policies(keywords: list, limit: int = 20) -> list:
-    """키워드로 정책 검색"""
-    results = []
-    
-    for policy in POLICIES:
-        score = 0
-        title = policy.get("title", "").lower()
-        cat = policy.get("category", "").lower()
-        agency = policy.get("agency", "").lower()
-        
-        for kw in keywords:
-            kw_lower = kw.lower()
-            if kw_lower in title:
-                score += 3
-            if kw_lower in cat:
-                score += 2
-            if kw_lower in agency:
-                score += 1
-        
-        if score > 0:
-            results.append({**policy, "match_score": score})
-    
-    results.sort(key=lambda x: x["match_score"], reverse=True)
-    return results[:limit]
-
-# ============================================
-# API 엔드포인트
-# ============================================
 @app.get("/")
 async def root():
     return {
-        "message": "N2B API Server v3.0",
-        "total_policies": len(POLICIES)
+        "message": "N2B API Server is running", 
+        "version": "3.1.0 - 지역 필터링",
+        "regions": REGIONS
     }
 
-@app.get("/stats")
-async def stats():
-    categories = {}
-    for p in POLICIES:
-        cat = p.get("category", "기타")
-        if cat:
-            categories[cat] = categories.get(cat, 0) + 1
-    return {"total": len(POLICIES), "categories": categories}
-
-@app.get("/reload")
-async def reload():
-    load_policies()
-    return {"total": len(POLICIES)}
+@app.get("/regions")
+async def get_regions():
+    """지역 목록 반환"""
+    return {"regions": REGIONS}
 
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
@@ -129,76 +53,100 @@ async def analyze(request: AnalyzeRequest):
             max_tokens=2000,
             messages=[{
                 "role": "user",
-                "content": f"""다음 사업계획서를 N2B 프레임워크로 분석해주세요.
+                "content": f"""다음 사업계획서를 N2B(NOT-BUT-BECAUSE) 프레임워크로 분석해주세요.
 
 사업계획서:
 {request.proposalText}
 
-JSON으로만 답변:
-{{"N": "문제점", "B": "솔루션", "C": "근거", "keywords": ["키워드1", "키워드2", "키워드3"], "category": "분야"}}
+다음 형식의 JSON으로만 답변해주세요:
+{{
+    "N": "현재의 문제점 (2-3문장)",
+    "B": "제안하는 솔루션 (2-3문장)",
+    "C": "근거 및 기대효과 (2-3문장)",
+    "keywords": ["키워드1", "키워드2", "키워드3"]
+}}
 """
             }]
         )
         
-        text = message.content[0].text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
+        text = message.content[0].text
+        text = text.replace("```json", "").replace("```", "").strip()
+        result = json.loads(text)
+        
+        return result
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/match")
 async def match(request: MatchRequest):
     try:
-        if len(POLICIES) == 0:
-            load_policies()
-        
-        n2b = request.n2bAnalysis
-        keywords = n2b.get("keywords", [])
-        
-        candidates = search_policies(keywords, limit=30)
-        if not candidates:
-            candidates = POLICIES[:30]
-        
         client = anthropic.Anthropic(api_key=request.apiKey)
-        candidates_text = json.dumps(candidates[:15], ensure_ascii=False, indent=2)
+        n2b = request.n2bAnalysis
+        region = request.region if request.region != "전체" else ""
         
-        message = client.messages.create(
+        region_filter = f"지역: {region}" if region else "전국"
+        
+        search_message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=3000,
+            max_tokens=4000,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search"
+            }],
             messages=[{
                 "role": "user",
-                "content": f"""N2B 분석과 정부지원사업 매칭:
+                "content": f"""다음 N2B 분석 결과를 바탕으로, 현재 모집중인 정부지원사업을 검색해주세요.
 
-N2B:
-- N: {n2b['N']}
-- B: {n2b['B']}
-- C: {n2b['C']}
-- 키워드: {', '.join(keywords)}
+N2B 분석:
+- N (문제점): {n2b['N']}
+- B (솔루션): {n2b['B']}
+- C (근거): {n2b['C']}
+- 키워드: {', '.join(n2b.get('keywords', []))}
 
-후보 ({len(POLICIES)}개 중):
-{candidates_text}
+🎯 지역 필터: {region_filter}
 
-JSON으로 3개 선정:
-{{"matches": [{{"title": "", "category": "", "agency": "", "deadline": "", "url": "", "score": 9, "reason": ""}}]}}
+bizinfo.go.kr 또는 k-startup.go.kr에서 {region_filter} 관련 현재 모집중인 정부지원사업을 검색해주세요.
+
+결과는 다음 JSON 형식으로 반환해주세요:
+{{
+    "programs": [
+        {{
+            "name": "사업명",
+            "organization": "주관기관",
+            "region": "지역",
+            "deadline": "마감일",
+            "amount": "지원금액",
+            "url": "상세링크",
+            "matchScore": 0-100,
+            "matchReason": "N2B 매칭 이유"
+        }}
+    ],
+    "searchDate": "검색일시",
+    "regionFilter": "{region_filter}"
+}}
 """
             }]
         )
         
-        text = message.content[0].text.replace("```json", "").replace("```", "").strip()
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        result = json.loads(text[start:end]) if start != -1 else {"matches": []}
-        result["total_searched"] = len(POLICIES)
+        result_text = ""
+        for block in search_message.content:
+            if hasattr(block, 'text'):
+                result_text += block.text
+        
+        result_text = result_text.replace("```json", "").replace("```", "").strip()
+        
+        try:
+            result = json.loads(result_text)
+        except:
+            result = {
+                "programs": [],
+                "searchDate": "",
+                "regionFilter": region_filter,
+                "rawResponse": result_text
+            }
+        
         return result
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/search")
-async def search(request: SearchRequest):
-    if len(POLICIES) == 0:
-        load_policies()
-    results = search_policies([request.keyword], limit=20)
-    return {"keyword": request.keyword, "total": len(POLICIES), "found": len(results), "results": results}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
