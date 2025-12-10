@@ -31,7 +31,7 @@ def load_policies():
     global POLICIES
     try:
         with urllib.request.urlopen(CSV_URL, timeout=60) as response:
-            content = response.read().decode('utf-8-sig')
+            content = response.read().decode('euc-kr')
             reader = csv.DictReader(io.StringIO(content))
             POLICIES = []
             for row in reader:
