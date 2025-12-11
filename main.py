@@ -1,12 +1,19 @@
+# ============================================
+# N2B 백엔드 v2.0 - API 통합 버전
+# 기업마당 + K-Startup 실시간 연동
+# ============================================
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 import anthropic
-import json
-import traceback
+import httpx
+import xml.etree.ElementTree as ET
+from typing import Optional
+import os
+import asyncio
 
-app = FastAPI()
+app = FastAPI(title="N2B Backend v2.0", description="기업마당 + K-Startup 연동")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,11 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-REGIONS = [
-    "전체", "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
-    "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"
-]
+# ============================================
+# API 키 설정 (환경변수 또는 기본값)
+# ============================================
+BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
+KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
 
+# ============================================
+# 요청/응답 모델
+# ============================================
 class AnalyzeRequest(BaseModel):
     apiKey: str
     proposalText: str
@@ -28,144 +39,270 @@ class AnalyzeRequest(BaseModel):
 class MatchRequest(BaseModel):
     apiKey: str
     n2bAnalysis: dict
-    region: Optional[str] = "전체"
+    useRealtime: bool = True  # 실시간 API 사용 여부
+
+# ============================================
+# 기업마당 API
+# ============================================
+async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100) -> list:
+    """기업마당에서 지원사업 목록 조회"""
+    url = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do"
+    
+    params = {
+        "crtfcKey": BIZINFO_API_KEY,
+        "dataType": "xml",
+        "searchCnt": count,
+    }
+    
+    if keyword:
+        params["searchKind"] = keyword
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            
+            root = ET.fromstring(response.text)
+            programs = []
+            
+            for item in root.findall(".//item"):
+                program = {
+                    "id": item.findtext("pblancId", ""),
+                    "name": item.findtext("pblancNm", ""),
+                    "agency": item.findtext("jrsdInsttNm", ""),
+                    "target": item.findtext("trgetNm", ""),
+                    "period": item.findtext("reqstBeginEndDe", ""),
+                    "support_amount": item.findtext("sprtCn", ""),
+                    "url": item.findtext("detailPageUrl", ""),
+                    "source": "기업마당"
+                }
+                programs.append(program)
+            
+            return programs
+            
+    except Exception as e:
+        print(f"기업마당 API 오류: {e}")
+        return []
+
+# ============================================
+# K-Startup API
+# ============================================
+async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, per_page: int = 100) -> list:
+    """K-Startup에서 창업지원사업 목록 조회"""
+    url = "https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementList"
+    
+    params = {
+        "serviceKey": KSTARTUP_API_KEY,
+        "pageNo": page,
+        "numOfRows": per_page,
+        "type": "json"
+    }
+    
+    if keyword:
+        params["searchKeyword"] = keyword
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            items = data.get("response", {}).get("body", {}).get("items", [])
+            
+            if items is None:
+                items = []
+            
+            programs = []
+            for item in items:
+                program = {
+                    "id": str(item.get("pbancSn", "")),
+                    "name": item.get("pbancNm", ""),
+                    "agency": item.get("excInsttNm", ""),
+                    "target": item.get("trgtNm", ""),
+                    "period": f"{item.get('pbancRcptBgngDt', '')} ~ {item.get('pbancRcptEndDt', '')}",
+                    "support_amount": item.get("sprtMtrCn", ""),
+                    "url": item.get("detailUrl", ""),
+                    "source": "K-Startup"
+                }
+                programs.append(program)
+            
+            return programs
+            
+    except Exception as e:
+        print(f"K-Startup API 오류: {e}")
+        return []
+
+# ============================================
+# 통합 검색
+# ============================================
+async def search_all_programs(keyword: Optional[str] = None) -> list:
+    """모든 API에서 지원사업 통합 검색"""
+    bizinfo_task = fetch_bizinfo_programs(keyword)
+    kstartup_task = fetch_kstartup_programs(keyword)
+    
+    bizinfo_results, kstartup_results = await asyncio.gather(
+        bizinfo_task, 
+        kstartup_task,
+        return_exceptions=True
+    )
+    
+    all_programs = []
+    
+    if isinstance(bizinfo_results, list):
+        all_programs.extend(bizinfo_results)
+    
+    if isinstance(kstartup_results, list):
+        all_programs.extend(kstartup_results)
+    
+    return all_programs
+
+# ============================================
+# API 엔드포인트
+# ============================================
 
 @app.get("/")
 async def root():
     return {
-        "message": "N2B API Server is running", 
-        "version": "3.1.0",
-        "regions": REGIONS
+        "message": "N2B Backend v2.0 - API 통합 버전",
+        "apis": ["기업마당", "K-Startup"],
+        "endpoints": ["/api/programs/bizinfo", "/api/programs/kstartup", "/api/programs/all"]
     }
 
-@app.get("/regions")
-async def get_regions():
-    return {"regions": REGIONS}
+@app.get("/api/programs/bizinfo")
+async def get_bizinfo_programs(keyword: str = None, count: int = 100):
+    """기업마당 지원사업 조회"""
+    programs = await fetch_bizinfo_programs(keyword, count)
+    return {"source": "기업마당", "count": len(programs), "programs": programs}
 
+@app.get("/api/programs/kstartup")
+async def get_kstartup_programs(keyword: str = None, page: int = 1):
+    """K-Startup 창업지원사업 조회"""
+    programs = await fetch_kstartup_programs(keyword, page)
+    return {"source": "K-Startup", "count": len(programs), "programs": programs}
+
+@app.get("/api/programs/all")
+async def get_all_programs(keyword: str = None):
+    """통합 검색 (기업마당 + K-Startup)"""
+    programs = await search_all_programs(keyword)
+    return {"count": len(programs), "programs": programs}
+
+# ============================================
+# N2B 분석 (기존 기능)
+# ============================================
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
+    """N2B 프레임워크로 기업 분석"""
     try:
-        if not request.apiKey or not request.apiKey.startswith("sk-"):
-            raise HTTPException(status_code=400, detail="Invalid API Key")
-        
         client = anthropic.Anthropic(api_key=request.apiKey)
         
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": f"""다음 사업계획서를 N2B(NOT-BUT-BECAUSE) 프레임워크로 분석해주세요.
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""다음 기업 정보를 N2B 프레임워크로 분석해주세요.
 
-사업계획서:
+기업 정보:
 {request.proposalText}
 
-반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트 없이 JSON만 출력하세요:
-{{"N": "현재의 문제점", "B": "제안하는 솔루션", "C": "근거 및 기대효과", "keywords": ["키워드1", "키워드2", "키워드3"]}}
-"""
-            }]
+N2B 분석:
+- N (문제점): 현재 기업이 직면한 핵심 문제
+- B (해결책): 문제를 해결할 수 있는 방안
+- B (근거): 왜 이 해결책이 효과적인지
+
+JSON 형식으로만 응답:
+{{"not": "...", "but": "...", "because": "..."}}"""
+                }
+            ]
         )
         
-        text = message.content[0].text.strip()
+        return {"success": True, "result": message.content[0].text}
         
-        # JSON 추출
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-        
-        # JSON 파싱 시도
-        try:
-            result = json.loads(text)
-        except json.JSONDecodeError:
-            # JSON 파싱 실패시 기본값 반환
-            result = {
-                "N": "분석 중 오류가 발생했습니다",
-                "B": "다시 시도해주세요",
-                "C": "입력 내용을 확인해주세요",
-                "keywords": ["오류"],
-                "raw": text[:500]
-            }
-        
-        return result
-        
-    except anthropic.AuthenticationError:
-        raise HTTPException(status_code=401, detail="API Key가 유효하지 않습니다")
-    except anthropic.RateLimitError:
-        raise HTTPException(status_code=429, detail="API 호출 한도 초과")
     except Exception as e:
-        print(f"Error in /analyze: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================
+# N2B 기반 정책 매칭 (실시간 API 연동)
+# ============================================
 @app.post("/match")
-async def match(request: MatchRequest):
+async def match_programs(request: MatchRequest):
+    """N2B 분석 결과 기반 지원사업 매칭"""
     try:
-        if not request.apiKey or not request.apiKey.startswith("sk-"):
-            raise HTTPException(status_code=400, detail="Invalid API Key")
+        # 실시간 API에서 지원사업 가져오기
+        if request.useRealtime:
+            all_programs = await search_all_programs()
+        else:
+            all_programs = []  # 기존 하드코딩 DB 사용
         
+        # Claude로 매칭
         client = anthropic.Anthropic(api_key=request.apiKey)
+        
         n2b = request.n2bAnalysis
-        region = request.region if request.region != "전체" else ""
-        region_filter = f"{region}" if region else "전국"
+        programs_text = "\n".join([
+            f"- {p['name']} ({p['agency']}): {p['target']}" 
+            for p in all_programs[:50]  # 상위 50개만
+        ])
         
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search"
-            }],
-            messages=[{
-                "role": "user",
-                "content": f"""다음 N2B 분석 결과와 매칭되는 현재 모집중인 정부지원사업을 검색해주세요.
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""다음 N2B 분석 결과에 가장 적합한 지원사업 3개를 추천해주세요.
 
 N2B 분석:
-- N (문제점): {n2b.get('N', '')}
-- B (솔루션): {n2b.get('B', '')}
-- C (근거): {n2b.get('C', '')}
-- 키워드: {', '.join(n2b.get('keywords', []))}
+- 문제점: {n2b.get('not', '')}
+- 해결책: {n2b.get('but', '')}
+- 근거: {n2b.get('because', '')}
 
-지역: {region_filter}
+현재 모집중인 지원사업:
+{programs_text}
 
-bizinfo.go.kr에서 {region_filter} 지역 현재 모집중인 정부지원사업을 검색하세요.
-
-반드시 아래 JSON 형식으로만 답변하세요:
-{{"programs": [{{"name": "사업명", "organization": "주관기관", "region": "지역", "deadline": "마감일", "amount": "지원금액", "url": "링크", "matchScore": 85, "matchReason": "매칭 이유"}}], "searchDate": "오늘날짜"}}
-"""
-            }]
+JSON 형식으로 응답:
+[
+  {{"name": "사업명", "agency": "기관", "reason": "추천 이유", "fit_score": 95}},
+  ...
+]"""
+                }
+            ]
         )
         
-        # 응답에서 텍스트 추출
-        result_text = ""
-        for block in message.content:
-            if hasattr(block, 'text'):
-                result_text += block.text
+        return {
+            "success": True, 
+            "total_programs": len(all_programs),
+            "result": message.content[0].text
+        }
         
-        result_text = result_text.strip()
-        
-        # JSON 추출
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0].strip()
-        
-        try:
-            result = json.loads(result_text)
-        except json.JSONDecodeError:
-            result = {
-                "programs": [],
-                "searchDate": "",
-                "message": "검색 결과를 파싱하지 못했습니다",
-                "raw": result_text[:1000]
-            }
-        
-        result["regionFilter"] = region_filter
-        return result
-        
-    except anthropic.AuthenticationError:
-        raise HTTPException(status_code=401, detail="API Key가 유효하지 않습니다")
-    except anthropic.RateLimitError:
-        raise HTTPException(status_code=429, detail="API 호출 한도 초과")
     except Exception as e:
-        print(f"Error in /match: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# 상태 확인
+# ============================================
+@app.get("/health")
+async def health_check():
+    """API 상태 확인"""
+    bizinfo_ok = False
+    kstartup_ok = False
+    
+    try:
+        bizinfo = await fetch_bizinfo_programs(count=1)
+        bizinfo_ok = len(bizinfo) > 0
+    except:
+        pass
+    
+    try:
+        kstartup = await fetch_kstartup_programs(per_page=1)
+        kstartup_ok = len(kstartup) > 0
+    except:
+        pass
+    
+    return {
+        "status": "healthy",
+        "apis": {
+            "bizinfo": "connected" if bizinfo_ok else "error",
+            "kstartup": "connected" if kstartup_ok else "error"
+        }
+    }
