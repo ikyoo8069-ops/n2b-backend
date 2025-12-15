@@ -89,17 +89,14 @@ async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100
 # ============================================
 async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, per_page: int = 100) -> list:
     """K-Startup에서 창업지원사업 목록 조회"""
-    url = "https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementList"
+    url = "https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementInformation01"
     
     params = {
-        "serviceKey": KSTARTUP_API_KEY,
-        "pageNo": page,
-        "numOfRows": per_page,
-        "type": "json"
+        "ServiceKey": KSTARTUP_API_KEY,
+        "page": page,
+        "perPage": per_page,
+        "returnType": "json"
     }
-    
-    if keyword:
-        params["searchKeyword"] = keyword
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -107,21 +104,26 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
             response.raise_for_status()
             
             data = response.json()
-            items = data.get("response", {}).get("body", {}).get("items", [])
             
+            # 응답 구조: data 배열 또는 items
+            items = data.get("data", [])
+            if not items:
+                items = data.get("items", [])
             if items is None:
                 items = []
             
             programs = []
             for item in items:
                 program = {
-                    "id": str(item.get("pbancSn", "")),
-                    "name": item.get("pbancNm", ""),
-                    "agency": item.get("excInsttNm", ""),
-                    "target": item.get("trgtNm", ""),
-                    "period": f"{item.get('pbancRcptBgngDt', '')} ~ {item.get('pbancRcptEndDt', '')}",
-                    "support_amount": item.get("sprtMtrCn", ""),
-                    "url": item.get("detailUrl", ""),
+                    "id": str(item.get("pbanc_sn", "")),
+                    "name": item.get("biz_pbanc_nm", ""),  # 지원 사업 공고 명
+                    "agency": item.get("excins_nm", "창업진흥원"),
+                    "target": item.get("aply_trgt_ctnt", item.get("aply_trgt", "")),  # 신청 대상
+                    "period": f"{item.get('pbanc_rcpt_bgng_dt', '')} ~ {item.get('pbanc_rcpt_end_dt', '')}",
+                    "support_amount": item.get("supt_biz_clsfc", ""),  # 지원 분야
+                    "url": item.get("detl_pg_url", ""),
+                    "region": item.get("supt_regin", ""),  # 지역명
+                    "recruiting": item.get("rcrt_prgs_yn", ""),  # 모집진행여부
                     "source": "K-Startup"
                 }
                 programs.append(program)
