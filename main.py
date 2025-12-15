@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 from typing import Optional, List
 import os
 import asyncio
+import json
+import re
 
 app = FastAPI(title="N2B Backend v3.0", description="키워드 + 지역 + 예상공고")
 
@@ -485,11 +487,28 @@ JSON 형식으로만 응답 (다른 텍스트 없이):
         # 예상 공고 추천
         expected_programs = get_expected_programs(keywords) if keywords else []
         
+        # AI 응답에서 URL 후처리 (사업명으로 원본 데이터에서 URL 매칭)
+        ai_result = message.content[0].text
+        try:
+            json_match = re.search(r'\[[\s\S]*\]', ai_result)
+            if json_match:
+                matched_programs = json.loads(json_match.group())
+                # 사업명으로 URL 찾아서 추가
+                for mp in matched_programs:
+                    for op in all_programs:
+                        if mp.get('name') and op.get('name') and mp['name'] in op['name']:
+                            mp['url'] = op.get('url', '')
+                            mp['period'] = op.get('period', mp.get('period', ''))
+                            break
+                ai_result = json.dumps(matched_programs, ensure_ascii=False)
+        except:
+            pass  # 파싱 실패 시 원본 유지
+        
         return {
             "success": True, 
             "total_programs": len(all_programs),
             "region": region,
-            "result": message.content[0].text,
+            "result": ai_result,
             "expected_programs": expected_programs
         }
         
