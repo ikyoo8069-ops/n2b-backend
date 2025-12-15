@@ -159,14 +159,15 @@ async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100
             programs = []
             
             for item in root.findall(".//item"):
+                pblanc_id = item.findtext("pblancId", "")
                 program = {
-                    "id": item.findtext("pblancId", ""),
+                    "id": pblanc_id,
                     "name": item.findtext("pblancNm", ""),
                     "agency": item.findtext("jrsdInsttNm", ""),
                     "target": item.findtext("trgetNm", ""),
                     "period": item.findtext("reqstBeginEndDe", ""),
                     "support_amount": item.findtext("sprtCn", ""),
-                    "url": item.findtext("detailPageUrl", ""),
+                    "url": f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={pblanc_id}" if pblanc_id else "",
                     "region": item.findtext("jrsdInsttNm", "전국"),  # 지역 정보
                     "source": "기업마당"
                 }
