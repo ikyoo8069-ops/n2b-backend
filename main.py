@@ -1,5 +1,5 @@
 # ============================================
-# N2B 백엔드 v2.0 - API 통합 버전
+# N2B 백엔드 v3.0 - 키워드 + 지역 + 예상공고
 # 기업마당 + K-Startup 실시간 연동
 # ============================================
 
@@ -9,11 +9,11 @@ from pydantic import BaseModel
 import anthropic
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Optional
+from typing import Optional, List
 import os
 import asyncio
 
-app = FastAPI(title="N2B Backend v2.0", description="기업마당 + K-Startup 연동")
+app = FastAPI(title="N2B Backend v3.0", description="키워드 + 지역 + 예상공고")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +30,96 @@ BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
 KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
 
 # ============================================
+# 반복 사업 패턴 (예상 공고용)
+# ============================================
+RECURRING_PROGRAMS = [
+    {
+        "name": "스마트공장 구축 지원사업",
+        "agency": "중소벤처기업부",
+        "expected_month": "2월",
+        "category": "제조/스마트공장",
+        "keywords": ["스마트공장", "제조", "자동화", "IoT"]
+    },
+    {
+        "name": "창업성장기술개발사업",
+        "agency": "중소벤처기업부",
+        "expected_month": "2월",
+        "category": "R&D/기술개발",
+        "keywords": ["창업", "기술개발", "R&D", "스타트업"]
+    },
+    {
+        "name": "농식품 벤처창업 지원",
+        "agency": "농림축산식품부",
+        "expected_month": "3월",
+        "category": "농업/스마트팜",
+        "keywords": ["농업", "스마트팜", "식품", "농식품"]
+    },
+    {
+        "name": "ICT 융합 스마트팜 지원",
+        "agency": "과학기술정보통신부",
+        "expected_month": "3월",
+        "category": "농업/스마트팜",
+        "keywords": ["스마트팜", "ICT", "IoT", "농업"]
+    },
+    {
+        "name": "AI 바우처 지원사업",
+        "agency": "과학기술정보통신부",
+        "expected_month": "2월",
+        "category": "AI/데이터",
+        "keywords": ["AI", "인공지능", "데이터", "머신러닝"]
+    },
+    {
+        "name": "데이터 바우처 지원사업",
+        "agency": "과학기술정보통신부",
+        "expected_month": "3월",
+        "category": "AI/데이터",
+        "keywords": ["데이터", "빅데이터", "분석"]
+    },
+    {
+        "name": "청년창업사관학교",
+        "agency": "중소벤처기업부",
+        "expected_month": "1월",
+        "category": "창업지원",
+        "keywords": ["청년", "창업", "사관학교"]
+    },
+    {
+        "name": "초기창업패키지",
+        "agency": "창업진흥원",
+        "expected_month": "2월",
+        "category": "창업지원",
+        "keywords": ["초기창업", "스타트업", "창업"]
+    },
+    {
+        "name": "그린뉴딜 스타트업 지원",
+        "agency": "환경부",
+        "expected_month": "3월",
+        "category": "환경/에너지",
+        "keywords": ["그린", "환경", "에너지", "탄소"]
+    },
+    {
+        "name": "헬스케어 스타트업 육성",
+        "agency": "보건복지부",
+        "expected_month": "4월",
+        "category": "헬스케어",
+        "keywords": ["헬스케어", "의료", "바이오", "건강"]
+    },
+    {
+        "name": "소재부품장비 기술개발",
+        "agency": "산업통상자원부",
+        "expected_month": "2월",
+        "category": "제조/소부장",
+        "keywords": ["소재", "부품", "장비", "제조"]
+    },
+    {
+        "name": "수출바우처 지원사업",
+        "agency": "KOTRA",
+        "expected_month": "1월",
+        "category": "수출/해외진출",
+        "keywords": ["수출", "해외", "글로벌", "마케팅"]
+    }
+]
+
+# ============================================
 # 요청/응답 모델
 # ============================================
 class AnalyzeRequest(BaseModel):
@@ -39,7 +129,8 @@ class AnalyzeRequest(BaseModel):
 class MatchRequest(BaseModel):
     apiKey: str
     n2bAnalysis: dict
-    useRealtime: bool = True  # 실시간 API 사용 여부
+    region: str = "전체"
+    useRealtime: bool = True
 
 # ============================================
 # 기업마당 API
@@ -74,6 +165,7 @@ async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100
                     "period": item.findtext("reqstBeginEndDe", ""),
                     "support_amount": item.findtext("sprtCn", ""),
                     "url": item.findtext("detailPageUrl", ""),
+                    "region": item.findtext("jrsdInsttNm", "전국"),  # 지역 정보
                     "source": "기업마당"
                 }
                 programs.append(program)
@@ -105,7 +197,6 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
             
             data = response.json()
             
-            # 응답 구조: data 배열 또는 items
             items = data.get("data", [])
             if not items:
                 items = data.get("items", [])
@@ -116,14 +207,14 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
             for item in items:
                 program = {
                     "id": str(item.get("pbanc_sn", "")),
-                    "name": item.get("biz_pbanc_nm", ""),  # 지원 사업 공고 명
+                    "name": item.get("biz_pbanc_nm", ""),
                     "agency": item.get("excins_nm", "창업진흥원"),
-                    "target": item.get("aply_trgt_ctnt", item.get("aply_trgt", "")),  # 신청 대상
+                    "target": item.get("aply_trgt_ctnt", item.get("aply_trgt", "")),
                     "period": f"{item.get('pbanc_rcpt_bgng_dt', '')} ~ {item.get('pbanc_rcpt_end_dt', '')}",
-                    "support_amount": item.get("supt_biz_clsfc", ""),  # 지원 분야
+                    "support_amount": item.get("supt_biz_clsfc", ""),
                     "url": item.get("detl_pg_url", ""),
-                    "region": item.get("supt_regin", ""),  # 지역명
-                    "recruiting": item.get("rcrt_prgs_yn", ""),  # 모집진행여부
+                    "region": item.get("supt_regin", "전국"),
+                    "recruiting": item.get("rcrt_prgs_yn", ""),
                     "source": "K-Startup"
                 }
                 programs.append(program)
@@ -135,10 +226,10 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
         return []
 
 # ============================================
-# 통합 검색
+# 통합 검색 (지역 필터링 포함)
 # ============================================
-async def search_all_programs(keyword: Optional[str] = None) -> list:
-    """모든 API에서 지원사업 통합 검색"""
+async def search_all_programs(keyword: Optional[str] = None, region: str = "전체") -> list:
+    """모든 API에서 지원사업 통합 검색 + 지역 필터링"""
     bizinfo_task = fetch_bizinfo_programs(keyword)
     kstartup_task = fetch_kstartup_programs(keyword)
     
@@ -156,7 +247,47 @@ async def search_all_programs(keyword: Optional[str] = None) -> list:
     if isinstance(kstartup_results, list):
         all_programs.extend(kstartup_results)
     
+    # 지역 필터링: 특정 지역 선택 시 전국 + 해당 지역 사업만
+    if region != "전체":
+        filtered = []
+        for p in all_programs:
+            p_region = p.get("region", "")
+            # 전국 사업이거나 해당 지역 사업이면 포함
+            if not p_region or p_region == "전국" or region in p_region:
+                filtered.append(p)
+        return filtered
+    
     return all_programs
+
+# ============================================
+# 예상 공고 매칭
+# ============================================
+def get_expected_programs(keywords: List[str]) -> list:
+    """키워드 기반 예상 공고 추천"""
+    expected = []
+    
+    for program in RECURRING_PROGRAMS:
+        # 키워드 매칭
+        match_count = 0
+        for kw in keywords:
+            for prog_kw in program["keywords"]:
+                if kw.lower() in prog_kw.lower() or prog_kw.lower() in kw.lower():
+                    match_count += 1
+                    break
+        
+        if match_count > 0:
+            expected.append({
+                "name": program["name"],
+                "agency": program["agency"],
+                "expected_month": f"2026년 {program['expected_month']}",
+                "category": program["category"],
+                "match_score": min(95, 70 + match_count * 10),
+                "type": "expected"
+            })
+    
+    # 매칭 점수 순 정렬
+    expected.sort(key=lambda x: x["match_score"], reverse=True)
+    return expected[:5]  # 상위 5개
 
 # ============================================
 # API 엔드포인트
@@ -165,9 +296,9 @@ async def search_all_programs(keyword: Optional[str] = None) -> list:
 @app.get("/")
 async def root():
     return {
-        "message": "N2B Backend v2.0 - API 통합 버전",
+        "message": "N2B Backend v3.0 - 키워드 + 지역 + 예상공고",
         "apis": ["기업마당", "K-Startup"],
-        "endpoints": ["/api/programs/bizinfo", "/api/programs/kstartup", "/api/programs/all"]
+        "features": ["키워드 추출", "지역 필터링", "예상 공고 추천"]
     }
 
 @app.get("/api/programs/bizinfo")
@@ -183,17 +314,17 @@ async def get_kstartup_programs(keyword: str = None, page: int = 1):
     return {"source": "K-Startup", "count": len(programs), "programs": programs}
 
 @app.get("/api/programs/all")
-async def get_all_programs(keyword: str = None):
-    """통합 검색 (기업마당 + K-Startup)"""
-    programs = await search_all_programs(keyword)
-    return {"count": len(programs), "programs": programs}
+async def get_all_programs(keyword: str = None, region: str = "전체"):
+    """통합 검색 (기업마당 + K-Startup) + 지역 필터"""
+    programs = await search_all_programs(keyword, region)
+    return {"count": len(programs), "region": region, "programs": programs}
 
 # ============================================
-# N2B 분석 (기존 기능)
+# N2B 분석 (키워드 추출 추가)
 # ============================================
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
-    """N2B 프레임워크로 기업 분석"""
+    """N2B 프레임워크로 기업 분석 + 키워드 추출"""
     try:
         client = anthropic.Anthropic(api_key=request.apiKey)
         
@@ -209,12 +340,13 @@ async def analyze(request: AnalyzeRequest):
 {request.proposalText}
 
 N2B 분석:
-- N (문제점): 현재 기업이 직면한 핵심 문제
-- B (해결책): 문제를 해결할 수 있는 방안
-- B (근거): 왜 이 해결책이 효과적인지
+- N (Not/문제점): 현재 기업이 직면한 핵심 문제
+- B (But/해결책): 문제를 해결할 수 있는 방안
+- B (Because/근거): 왜 이 해결책이 효과적인지
+- 키워드: 정부지원사업 검색에 활용할 핵심 키워드 5개
 
-JSON 형식으로만 응답:
-{{"not": "...", "but": "...", "because": "..."}}"""
+JSON 형식으로만 응답 (다른 텍스트 없이):
+{{"not": "...", "but": "...", "because": "...", "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]}}"""
                 }
             ]
         )
@@ -225,25 +357,29 @@ JSON 형식으로만 응답:
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
-# N2B 기반 정책 매칭 (실시간 API 연동)
+# N2B 기반 정책 매칭 (지역 + 예상공고 포함)
 # ============================================
 @app.post("/match")
 async def match_programs(request: MatchRequest):
-    """N2B 분석 결과 기반 지원사업 매칭"""
+    """N2B 분석 결과 기반 지원사업 매칭 + 예상공고"""
     try:
-        # 실시간 API에서 지원사업 가져오기
+        region = request.region if hasattr(request, 'region') else "전체"
+        
+        # 실시간 API에서 지원사업 가져오기 (지역 필터링 적용)
         if request.useRealtime:
-            all_programs = await search_all_programs()
+            all_programs = await search_all_programs(region=region)
         else:
-            all_programs = []  # 기존 하드코딩 DB 사용
+            all_programs = []
         
         # Claude로 매칭
         client = anthropic.Anthropic(api_key=request.apiKey)
         
         n2b = request.n2bAnalysis
+        keywords = n2b.get('keywords', [])
+        
         programs_text = "\n".join([
-            f"- {p['name']} ({p['agency']}): {p['target']}" 
-            for p in all_programs[:50]  # 상위 50개만
+            f"- {p['name']} ({p.get('agency', '')}) [{p.get('region', '전국')}]: {p.get('target', '')}" 
+            for p in all_programs[:50]
         ])
         
         message = client.messages.create(
@@ -252,33 +388,51 @@ async def match_programs(request: MatchRequest):
             messages=[
                 {
                     "role": "user",
-                    "content": f"""다음 N2B 분석 결과에 가장 적합한 지원사업 3개를 추천해주세요.
+                    "content": f"""다음 N2B 분석 결과에 가장 적합한 지원사업 5개를 추천해주세요.
 
 N2B 분석:
 - 문제점: {n2b.get('not', '')}
 - 해결책: {n2b.get('but', '')}
 - 근거: {n2b.get('because', '')}
+- 키워드: {', '.join(keywords) if keywords else '없음'}
 
-현재 모집중인 지원사업:
-{programs_text}
+현재 모집중인 지원사업 (지역: {region}):
+{programs_text if programs_text else '현재 모집중인 사업이 없습니다.'}
 
-JSON 형식으로 응답:
+JSON 형식으로만 응답 (다른 텍스트 없이):
 [
   {{"name": "사업명", "agency": "기관", "reason": "추천 이유", "fit_score": 95}},
   ...
-]"""
+]
+
+적합한 사업이 없으면 빈 배열 []로 응답."""
                 }
             ]
         )
         
+        # 예상 공고 추천
+        expected_programs = get_expected_programs(keywords) if keywords else []
+        
         return {
             "success": True, 
             "total_programs": len(all_programs),
-            "result": message.content[0].text
+            "region": region,
+            "result": message.content[0].text,
+            "expected_programs": expected_programs
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# 예상 공고 조회
+# ============================================
+@app.get("/api/programs/expected")
+async def get_expected_programs_api(keywords: str = ""):
+    """키워드 기반 예상 공고 조회"""
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    expected = get_expected_programs(keyword_list) if keyword_list else RECURRING_PROGRAMS[:5]
+    return {"count": len(expected), "programs": expected}
 
 # ============================================
 # 상태 확인
@@ -303,8 +457,10 @@ async def health_check():
     
     return {
         "status": "healthy",
+        "version": "3.0",
         "apis": {
             "bizinfo": "connected" if bizinfo_ok else "error",
             "kstartup": "connected" if kstartup_ok else "error"
-        }
+        },
+        "features": ["keywords", "region_filter", "expected_programs"]
     }
