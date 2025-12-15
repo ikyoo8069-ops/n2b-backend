@@ -450,7 +450,7 @@ async def match_programs(request: MatchRequest):
         keywords = n2b.get('keywords', [])
         
         programs_text = "\n".join([
-            f"- {p['name']} ({p.get('agency', '')}) [{p.get('region', '전국')}]: {p.get('target', '')}" 
+            f"- {p['name']} | 기관: {p.get('agency', '')} | 기간: {p.get('period', '미정')} | URL: {p.get('url', '')}" 
             for p in all_programs[:50]
         ])
         
@@ -473,7 +473,7 @@ N2B 분석:
 
 JSON 형식으로만 응답 (다른 텍스트 없이):
 [
-  {{"name": "사업명", "agency": "기관", "reason": "추천 이유", "fit_score": 95}},
+  {{"name": "사업명", "agency": "기관", "period": "접수기간", "url": "상세페이지URL", "reason": "추천 이유", "fit_score": 95}},
   ...
 ]
 
