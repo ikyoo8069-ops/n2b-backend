@@ -226,10 +226,63 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
         return []
 
 # ============================================
-# 통합 검색 (지역 필터링 포함)
+# 지역 키워드 목록 (다른 지역 제외용)
+# ============================================
+REGION_KEYWORDS = {
+    "서울": ["서울", "강남", "강북", "마포", "송파", "영등포"],
+    "부산": ["부산", "해운대", "동래"],
+    "대구": ["대구", "수성", "달서"],
+    "인천": ["인천", "연수", "부평"],
+    "광주": ["광주"],
+    "대전": ["대전", "유성", "서구"],
+    "울산": ["울산"],
+    "세종": ["세종"],
+    "경기": ["경기", "수원", "성남", "고양", "용인", "안양", "안산", "화성", "평택", "시흥", "파주", "김포", "광명", "군포", "오산", "이천", "안성", "의왕", "하남", "여주", "양평", "동두천", "과천", "구리", "남양주", "의정부", "포천"],
+    "강원": ["강원", "춘천", "원주", "강릉", "동해", "속초"],
+    "충북": ["충북", "청주", "충주", "제천"],
+    "충남": ["충남", "천안", "아산", "공주", "논산", "서산", "당진"],
+    "전북": ["전북", "전주", "익산", "군산", "정읍"],
+    "전남": ["전남", "목포", "여수", "순천", "광양"],
+    "경북": ["경북", "포항", "경주", "구미", "김천", "안동", "영주"],
+    "경남": ["경남", "창원", "진주", "김해", "양산", "거제", "통영"],
+    "제주": ["제주", "서귀포"]
+}
+
+def get_other_regions(selected_region: str) -> list:
+    """선택한 지역 외 다른 지역 키워드 목록 반환"""
+    other_keywords = []
+    for region, keywords in REGION_KEYWORDS.items():
+        if region != selected_region:
+            other_keywords.extend(keywords)
+    return other_keywords
+
+def contains_other_region(name: str, selected_region: str) -> bool:
+    """사업명에 다른 지역 키워드가 포함되어 있는지 확인"""
+    other_keywords = get_other_regions(selected_region)
+    name_lower = name.lower()
+    for keyword in other_keywords:
+        if keyword in name_lower:
+            return True
+    return False
+
+def is_nationwide_program(name: str, agency: str) -> bool:
+    """전국 사업인지 확인 (중앙부처 사업)"""
+    nationwide_agencies = [
+        "중소벤처기업부", "과학기술정보통신부", "산업통상자원부", 
+        "농림축산식품부", "환경부", "보건복지부", "고용노동부",
+        "창업진흥원", "중소기업진흥공단", "KOTRA", "정보통신산업진흥원",
+        "한국산업기술진흥원", "한국에너지공단"
+    ]
+    for na in nationwide_agencies:
+        if na in agency:
+            return True
+    return False
+
+# ============================================
+# 통합 검색 (지역 필터링 강화)
 # ============================================
 async def search_all_programs(keyword: Optional[str] = None, region: str = "전체") -> list:
-    """모든 API에서 지원사업 통합 검색 + 지역 필터링"""
+    """모든 API에서 지원사업 통합 검색 + 지역 필터링 (강화)"""
     bizinfo_task = fetch_bizinfo_programs(keyword)
     kstartup_task = fetch_kstartup_programs(keyword)
     
@@ -247,14 +300,33 @@ async def search_all_programs(keyword: Optional[str] = None, region: str = "전�
     if isinstance(kstartup_results, list):
         all_programs.extend(kstartup_results)
     
-    # 지역 필터링: 특정 지역 선택 시 전국 + 해당 지역 사업만
+    # 지역 필터링: 특정 지역 선택 시
     if region != "전체":
         filtered = []
+        selected_keywords = REGION_KEYWORDS.get(region, [region])
+        
         for p in all_programs:
+            name = p.get("name", "")
+            agency = p.get("agency", "")
             p_region = p.get("region", "")
-            # 전국 사업이거나 해당 지역 사업이면 포함
-            if not p_region or p_region == "전국" or region in p_region:
-                filtered.append(p)
+            
+            # 1. 중앙부처 전국 사업 → 포함
+            if is_nationwide_program(name, agency):
+                # 단, 사업명에 다른 지역 키워드가 있으면 제외
+                if not contains_other_region(name, region):
+                    filtered.append(p)
+                continue
+            
+            # 2. 선택한 지역 키워드가 사업명/지역에 포함 → 포함
+            for kw in selected_keywords:
+                if kw in name or kw in p_region:
+                    filtered.append(p)
+                    break
+            else:
+                # 3. 다른 지역 키워드가 없고 지역 정보도 없으면 → 전국으로 간주
+                if not contains_other_region(name, region) and not p_region:
+                    filtered.append(p)
+        
         return filtered
     
     return all_programs
