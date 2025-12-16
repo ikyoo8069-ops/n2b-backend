@@ -1,6 +1,6 @@
 # ============================================
-# N2B 백엔드 v3.0 - 키워드 + 지역 + 예상공고
-# 기업마당 + K-Startup 실시간 연동
+# N2B 백엔드 v3.1 - 데모 모드 추가
+# 기업마당 + K-Startup 실시간 연동 + 데모용 API
 # ============================================
 
 from fastapi import FastAPI, HTTPException
@@ -14,8 +14,10 @@ import os
 import asyncio
 import json
 import re
+from datetime import datetime, date
+from collections import defaultdict
 
-app = FastAPI(title="N2B Backend v3.0", description="키워드 + 지역 + 예상공고")
+app = FastAPI(title="N2B Backend v3.1", description="키워드 + 지역 + 예상공고 + 데모모드")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,10 +28,36 @@ app.add_middleware(
 )
 
 # ============================================
-# API 키 설정 (환경변수 또는 기본값)
+# API 키 설정 (환경변수)
 # ============================================
 BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
 KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
+
+# 데모용 Claude API 키 (Render 환경변수로 설정)
+DEMO_ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# ============================================
+# 간단한 Rate Limiting (일일 요청 제한)
+# ============================================
+daily_request_count = defaultdict(int)
+last_reset_date = date.today()
+MAX_DAILY_REQUESTS = 100  # 하루 최대 100회
+
+def check_rate_limit() -> bool:
+    """일일 요청 제한 확인"""
+    global daily_request_count, last_reset_date
+    
+    today = date.today()
+    if today != last_reset_date:
+        daily_request_count.clear()
+        last_reset_date = today
+    
+    daily_request_count["total"] += 1
+    return daily_request_count["total"] <= MAX_DAILY_REQUESTS
+
+def get_remaining_requests() -> int:
+    """남은 요청 횟수"""
+    return max(0, MAX_DAILY_REQUESTS - daily_request_count.get("total", 0))
 
 # ============================================
 # 반복 사업 패턴 (예상 공고용)
@@ -134,6 +162,20 @@ class MatchRequest(BaseModel):
     region: str = "전체"
     useRealtime: bool = True
 
+# 데모용 요청 모델 (API 키 불필요)
+class DemoAnalyzeRequest(BaseModel):
+    proposalText: str
+
+class DemoProposalRequest(BaseModel):
+    companyInfo: str
+    n2bResult: dict
+    selectedProgram: dict
+
+class DemoPptRequest(BaseModel):
+    companyInfo: str
+    n2bResult: dict
+    selectedProgram: dict
+
 # ============================================
 # 기업마당 API
 # ============================================
@@ -168,7 +210,7 @@ async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100
                     "period": item.findtext("reqstBeginEndDe", ""),
                     "support_amount": item.findtext("sprtCn", ""),
                     "url": f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={pblanc_id}" if pblanc_id else "",
-                    "region": item.findtext("jrsdInsttNm", "전국"),  # 지역 정보
+                    "region": item.findtext("jrsdInsttNm", "전국"),
                     "source": "기업마당"
                 }
                 programs.append(program)
@@ -229,7 +271,7 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, 
         return []
 
 # ============================================
-# 지역 키워드 목록 (다른 지역 제외용)
+# 지역 키워드 목록
 # ============================================
 REGION_KEYWORDS = {
     "서울": ["서울", "강남", "강북", "마포", "송파", "영등포"],
@@ -252,7 +294,6 @@ REGION_KEYWORDS = {
 }
 
 def get_other_regions(selected_region: str) -> list:
-    """선택한 지역 외 다른 지역 키워드 목록 반환"""
     other_keywords = []
     for region, keywords in REGION_KEYWORDS.items():
         if region != selected_region:
@@ -260,7 +301,6 @@ def get_other_regions(selected_region: str) -> list:
     return other_keywords
 
 def contains_other_region(name: str, selected_region: str) -> bool:
-    """사업명에 다른 지역 키워드가 포함되어 있는지 확인"""
     other_keywords = get_other_regions(selected_region)
     name_lower = name.lower()
     for keyword in other_keywords:
@@ -269,7 +309,6 @@ def contains_other_region(name: str, selected_region: str) -> bool:
     return False
 
 def is_nationwide_program(name: str, agency: str) -> bool:
-    """전국 사업인지 확인 (중앙부처 사업)"""
     nationwide_agencies = [
         "중소벤처기업부", "과학기술정보통신부", "산업통상자원부", 
         "농림축산식품부", "환경부", "보건복지부", "고용노동부",
@@ -282,10 +321,9 @@ def is_nationwide_program(name: str, agency: str) -> bool:
     return False
 
 # ============================================
-# 통합 검색 (지역 필터링 강화)
+# 통합 검색
 # ============================================
 async def search_all_programs(keyword: Optional[str] = None, region: str = "전체") -> list:
-    """모든 API에서 지원사업 통합 검색 + 지역 필터링 (강화)"""
     bizinfo_task = fetch_bizinfo_programs(keyword)
     kstartup_task = fetch_kstartup_programs(keyword)
     
@@ -303,7 +341,6 @@ async def search_all_programs(keyword: Optional[str] = None, region: str = "전�
     if isinstance(kstartup_results, list):
         all_programs.extend(kstartup_results)
     
-    # 지역 필터링: 특정 지역 선택 시
     if region != "전체":
         filtered = []
         selected_keywords = REGION_KEYWORDS.get(region, [region])
@@ -313,20 +350,16 @@ async def search_all_programs(keyword: Optional[str] = None, region: str = "전�
             agency = p.get("agency", "")
             p_region = p.get("region", "")
             
-            # 1. 중앙부처 전국 사업 → 포함
             if is_nationwide_program(name, agency):
-                # 단, 사업명에 다른 지역 키워드가 있으면 제외
                 if not contains_other_region(name, region):
                     filtered.append(p)
                 continue
             
-            # 2. 선택한 지역 키워드가 사업명/지역에 포함 → 포함
             for kw in selected_keywords:
                 if kw in name or kw in p_region:
                     filtered.append(p)
                     break
             else:
-                # 3. 다른 지역 키워드가 없고 지역 정보도 없으면 → 전국으로 간주
                 if not contains_other_region(name, region) and not p_region:
                     filtered.append(p)
         
@@ -338,11 +371,9 @@ async def search_all_programs(keyword: Optional[str] = None, region: str = "전�
 # 예상 공고 매칭
 # ============================================
 def get_expected_programs(keywords: List[str]) -> list:
-    """키워드 기반 예상 공고 추천"""
     expected = []
     
     for program in RECURRING_PROGRAMS:
-        # 키워드 매칭
         match_count = 0
         for kw in keywords:
             for prog_kw in program["keywords"]:
@@ -360,46 +391,39 @@ def get_expected_programs(keywords: List[str]) -> list:
                 "type": "expected"
             })
     
-    # 매칭 점수 순 정렬
     expected.sort(key=lambda x: x["match_score"], reverse=True)
-    return expected[:5]  # 상위 5개
+    return expected[:5]
 
 # ============================================
-# API 엔드포인트
+# API 엔드포인트 (기존)
 # ============================================
 
 @app.get("/")
 async def root():
     return {
-        "message": "N2B Backend v3.0 - 키워드 + 지역 + 예상공고",
+        "message": "N2B Backend v3.1 - 데모 모드 지원",
         "apis": ["기업마당", "K-Startup"],
-        "features": ["키워드 추출", "지역 필터링", "예상 공고 추천"]
+        "features": ["키워드 추출", "지역 필터링", "예상 공고 추천", "데모 모드"],
+        "demo_remaining": get_remaining_requests()
     }
 
 @app.get("/api/programs/bizinfo")
 async def get_bizinfo_programs(keyword: str = None, count: int = 100):
-    """기업마당 지원사업 조회"""
     programs = await fetch_bizinfo_programs(keyword, count)
     return {"source": "기업마당", "count": len(programs), "programs": programs}
 
 @app.get("/api/programs/kstartup")
 async def get_kstartup_programs(keyword: str = None, page: int = 1):
-    """K-Startup 창업지원사업 조회"""
     programs = await fetch_kstartup_programs(keyword, page)
     return {"source": "K-Startup", "count": len(programs), "programs": programs}
 
 @app.get("/api/programs/all")
 async def get_all_programs(keyword: str = None, region: str = "전체"):
-    """통합 검색 (기업마당 + K-Startup) + 지역 필터"""
     programs = await search_all_programs(keyword, region)
     return {"count": len(programs), "region": region, "programs": programs}
 
-# ============================================
-# N2B 분석 (키워드 추출 추가)
-# ============================================
 @app.post("/analyze")
 async def analyze(request: AnalyzeRequest):
-    """N2B 프레임워크로 기업 분석 + 키워드 추출"""
     try:
         client = anthropic.Anthropic(api_key=request.apiKey)
         
@@ -431,22 +455,16 @@ JSON 형식으로만 응답 (다른 텍스트 없이):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============================================
-# N2B 기반 정책 매칭 (지역 + 예상공고 포함)
-# ============================================
 @app.post("/match")
 async def match_programs(request: MatchRequest):
-    """N2B 분석 결과 기반 지원사업 매칭 + 예상공고"""
     try:
         region = request.region if hasattr(request, 'region') else "전체"
         
-        # 실시간 API에서 지원사업 가져오기 (지역 필터링 적용)
         if request.useRealtime:
             all_programs = await search_all_programs(region=region)
         else:
             all_programs = []
         
-        # Claude로 매칭
         client = anthropic.Anthropic(api_key=request.apiKey)
         
         n2b = request.n2bAnalysis
@@ -485,16 +503,13 @@ JSON 형식으로만 응답 (다른 텍스트 없이):
             ]
         )
         
-        # 예상 공고 추천
         expected_programs = get_expected_programs(keywords) if keywords else []
         
-        # AI 응답에서 URL 후처리 (사업명으로 원본 데이터에서 URL 매칭)
         ai_result = message.content[0].text
         try:
             json_match = re.search(r'\[[\s\S]*\]', ai_result)
             if json_match:
                 matched_programs = json.loads(json_match.group())
-                # 사업명으로 URL 찾아서 추가
                 for mp in matched_programs:
                     for op in all_programs:
                         if mp.get('name') and op.get('name') and mp['name'] in op['name']:
@@ -503,7 +518,7 @@ JSON 형식으로만 응답 (다른 텍스트 없이):
                             break
                 ai_result = json.dumps(matched_programs, ensure_ascii=False)
         except:
-            pass  # 파싱 실패 시 원본 유지
+            pass
         
         return {
             "success": True, 
@@ -516,22 +531,14 @@ JSON 형식으로만 응답 (다른 텍스트 없이):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============================================
-# 예상 공고 조회
-# ============================================
 @app.get("/api/programs/expected")
 async def get_expected_programs_api(keywords: str = ""):
-    """키워드 기반 예상 공고 조회"""
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
     expected = get_expected_programs(keyword_list) if keyword_list else RECURRING_PROGRAMS[:5]
     return {"count": len(expected), "programs": expected}
 
-# ============================================
-# 상태 확인
-# ============================================
 @app.get("/health")
 async def health_check():
-    """API 상태 확인"""
     bizinfo_ok = False
     kstartup_ok = False
     
@@ -549,10 +556,197 @@ async def health_check():
     
     return {
         "status": "healthy",
-        "version": "3.0",
+        "version": "3.1",
         "apis": {
             "bizinfo": "connected" if bizinfo_ok else "error",
             "kstartup": "connected" if kstartup_ok else "error"
         },
-        "features": ["keywords", "region_filter", "expected_programs"]
+        "features": ["keywords", "region_filter", "expected_programs", "demo_mode"],
+        "demo_remaining": get_remaining_requests()
     }
+
+
+# ============================================
+# 데모용 엔드포인트 (API 키 내장)
+# ============================================
+
+@app.get("/demo/status")
+async def demo_status():
+    """데모 모드 상태 확인"""
+    return {
+        "available": bool(DEMO_ANTHROPIC_API_KEY),
+        "remaining_requests": get_remaining_requests(),
+        "max_daily_requests": MAX_DAILY_REQUESTS
+    }
+
+@app.post("/demo/analyze")
+async def demo_analyze(request: DemoAnalyzeRequest):
+    """데모용 N2B 분석 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": f"""다음 기업 정보를 NBB 프레임워크로 분석해주세요.
+
+기업 정보:
+{request.proposalText}
+
+NBB 분석 형식:
+N (NOT/문제점): 현재 기업이 직면한 핵심 문제를 2-3문장으로 명확히 정리
+B (BUT/해결책): 문제를 해결할 수 있는 구체적인 방안 제시
+B (BECAUSE/근거): 왜 이 해결책이 효과적인지 논리적 근거 설명
+
+반드시 아래 JSON 형식으로만 응답해주세요:
+{{"not": "문제점 내용", "but": "해결책 내용", "because": "근거 내용"}}"""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/demo/proposal")
+async def demo_generate_proposal(request: DemoProposalRequest):
+    """데모용 제안서 생성 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": f"""정부 R&D 제안서 초안을 작성해주세요.
+
+## 기업 정보
+{request.companyInfo}
+
+## NBB 분석 결과
+- N (NOT/문제점): {request.n2bResult.get('not', '')}
+- B (BUT/해결책): {request.n2bResult.get('but', '')}
+- B (BECAUSE/근거): {request.n2bResult.get('because', '')}
+
+## 선택한 지원사업
+- 사업명: {request.selectedProgram.get('name', '')}
+- 지원내용: {request.selectedProgram.get('description', '')}
+
+## 작성 양식
+
+### 1. 기술개발 개요
+#### 1.1 개발 필요성
+(NBB의 N을 바탕으로 구체적으로 작성)
+
+#### 1.2 개발 목적
+(NBB의 첫번째 B를 바탕으로 작성)
+
+### 2. 기술개발 목표 및 내용
+#### 2.1 최종 목표
+(정량적 목표 포함)
+
+#### 2.2 세부 개발 내용
+
+### 3. 추진전략 및 일정
+#### 3.1 추진체계
+#### 3.2 추진일정 (1년 기준)
+
+### 4. 기대효과 및 활용방안
+(NBB의 두번째 B를 바탕으로 작성)
+
+### 5. 소요예산 개요
+
+실제 제출용처럼 구체적이고 설득력 있게 작성해주세요."""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/demo/ppt")
+async def demo_generate_ppt(request: DemoPptRequest):
+    """데모용 PPT 구성안 생성 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=3000,
+            messages=[{
+                "role": "user",
+                "content": f"""발표자료(PPT) 구성안을 작성해주세요.
+
+## 기업 정보
+{request.companyInfo}
+
+## NBB 분석 결과
+- N (NOT): {request.n2bResult.get('not', '')}
+- B (BUT): {request.n2bResult.get('but', '')}
+- B (BECAUSE): {request.n2bResult.get('because', '')}
+
+## 선택한 지원사업: {request.selectedProgram.get('name', '')}
+
+## 발표자료 구성 (10~12슬라이드)
+
+각 슬라이드별로:
+**슬라이드 N: [제목]**
+- 핵심 내용 1
+- 핵심 내용 2
+- 핵심 내용 3
+[발표 포인트: 강조할 내용]
+
+구성:
+1. 표지
+2. 목차
+3. 기업 소개
+4. 개발 배경 및 필요성
+5. 기술 현황 및 문제점
+6. 개발 목표
+7. 핵심 기술 및 차별성
+8. 개발 내용 및 방법
+9. 추진 일정
+10. 기대 효과
+11. 사업화 계획
+12. 마무리"""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
