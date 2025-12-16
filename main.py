@@ -1,393 +1,839 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>슬기로운 기업경영 v1.0 (데모)</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        .gradient-bg { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); }
-        .card-hover:hover { transform: translateY(-3px); box-shadow: 0 15px 40px rgba(255,107,53,0.2); }
-        .worry-btn { transition: all 0.3s; }
-        .worry-btn:hover { transform: scale(1.02); }
-        .worry-btn.selected { ring: 4px; ring-color: #ff6b35; }
-    </style>
-</head>
-<body class="gradient-bg min-h-screen">
-    <!-- 헤더 -->
-    <header class="text-white py-8">
-        <div class="container mx-auto px-4 text-center">
-            <h1 class="text-3xl font-bold mb-2">🚀 슬기로운 기업경영</h1>
-            <p class="text-gray-300">N2B 기반 AI 경영 파트너 - 정책자금 4대 영역 매칭</p>
-            <p class="text-sm text-gray-400 mt-1">v1.0 - 정부지원사업 매칭</p>
-            <span class="inline-block mt-3 px-4 py-2 bg-green-500/30 text-green-300 rounded-full text-sm">🎯 데모 모드 - API 키 불필요</span>
-        </div>
-    </header>
+# ============================================
+# N2B 백엔드 v3.1 - 데모 모드 추가
+# 기업마당 + K-Startup 실시간 연동 + 데모용 API
+# ============================================
 
-    <main class="container mx-auto px-4 py-6 max-w-2xl">
-        <!-- 남은 요청 횟수 -->
-        <div class="bg-yellow-500/20 border border-yellow-500/30 rounded-xl p-4 mb-6">
-            <p class="text-yellow-200 text-sm">⏳ 남은 데모 요청: <strong id="remainingCount">확인 중...</strong>회 (일일 한도)</p>
-        </div>
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import anthropic
+import httpx
+import xml.etree.ElementTree as ET
+from typing import Optional, List
+import os
+import asyncio
+import json
+import re
+from datetime import datetime, date
+from collections import defaultdict
 
-        <!-- 지역 선택 -->
-        <div class="bg-white/10 backdrop-blur rounded-xl p-4 mb-6">
-            <label class="block text-sm font-medium text-gray-300 mb-2">📍 지역 선택</label>
-            <select id="regionSelect" class="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white">
-                <option value="전체" class="text-gray-800">🇰🇷 전체 (전국)</option>
-                <option value="서울" class="text-gray-800">서울특별시</option>
-                <option value="부산" class="text-gray-800">부산광역시</option>
-                <option value="대구" class="text-gray-800">대구광역시</option>
-                <option value="인천" class="text-gray-800">인천광역시</option>
-                <option value="광주" class="text-gray-800">광주광역시</option>
-                <option value="대전" class="text-gray-800">대전광역시</option>
-                <option value="울산" class="text-gray-800">울산광역시</option>
-                <option value="세종" class="text-gray-800">세종특별자치시</option>
-                <option value="경기" class="text-gray-800">경기도</option>
-                <option value="강원" class="text-gray-800">강원특별자치도</option>
-                <option value="충북" class="text-gray-800">충청북도</option>
-                <option value="충남" class="text-gray-800">충청남도</option>
-                <option value="전북" class="text-gray-800">전북특별자치도</option>
-                <option value="전남" class="text-gray-800">전라남도</option>
-                <option value="경북" class="text-gray-800">경상북도</option>
-                <option value="경남" class="text-gray-800">경상남도</option>
-                <option value="제주" class="text-gray-800">제주특별자치도</option>
-            </select>
-        </div>
+app = FastAPI(title="N2B Backend v3.1", description="키워드 + 지역 + 예상공고 + 데모모드")
 
-        <!-- 5개 문 (고민 선택) -->
-        <div class="bg-white/10 backdrop-blur rounded-xl p-6 mb-6">
-            <h2 class="text-xl font-bold text-white mb-2">💬 어떤 고민이 있으세요?</h2>
-            <p class="text-gray-400 text-sm mb-4">하나를 선택하거나 직접 입력하세요</p>
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================
+# API 키 설정 (환경변수)
+# ============================================
+BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
+KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
+
+# 데모용 Claude API 키 (Render 환경변수로 설정)
+DEMO_ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# ============================================
+# 간단한 Rate Limiting (일일 요청 제한)
+# ============================================
+daily_request_count = defaultdict(int)
+last_reset_date = date.today()
+MAX_DAILY_REQUESTS = 100  # 하루 최대 100회
+
+def check_rate_limit() -> bool:
+    """일일 요청 제한 확인"""
+    global daily_request_count, last_reset_date
+    
+    today = date.today()
+    if today != last_reset_date:
+        daily_request_count.clear()
+        last_reset_date = today
+    
+    daily_request_count["total"] += 1
+    return daily_request_count["total"] <= MAX_DAILY_REQUESTS
+
+def get_remaining_requests() -> int:
+    """남은 요청 횟수"""
+    return max(0, MAX_DAILY_REQUESTS - daily_request_count.get("total", 0))
+
+# ============================================
+# 반복 사업 패턴 (예상 공고용)
+# ============================================
+RECURRING_PROGRAMS = [
+    {
+        "name": "스마트공장 구축 지원사업",
+        "agency": "중소벤처기업부",
+        "expected_month": "2월",
+        "category": "제조/스마트공장",
+        "keywords": ["스마트공장", "제조", "자동화", "IoT"]
+    },
+    {
+        "name": "창업성장기술개발사업",
+        "agency": "중소벤처기업부",
+        "expected_month": "2월",
+        "category": "R&D/기술개발",
+        "keywords": ["창업", "기술개발", "R&D", "스타트업"]
+    },
+    {
+        "name": "농식품 벤처창업 지원",
+        "agency": "농림축산식품부",
+        "expected_month": "3월",
+        "category": "농업/스마트팜",
+        "keywords": ["농업", "스마트팜", "식품", "농식품"]
+    },
+    {
+        "name": "ICT 융합 스마트팜 지원",
+        "agency": "과학기술정보통신부",
+        "expected_month": "3월",
+        "category": "농업/스마트팜",
+        "keywords": ["스마트팜", "ICT", "IoT", "농업"]
+    },
+    {
+        "name": "AI 바우처 지원사업",
+        "agency": "과학기술정보통신부",
+        "expected_month": "2월",
+        "category": "AI/데이터",
+        "keywords": ["AI", "인공지능", "데이터", "머신러닝"]
+    },
+    {
+        "name": "데이터 바우처 지원사업",
+        "agency": "과학기술정보통신부",
+        "expected_month": "3월",
+        "category": "AI/데이터",
+        "keywords": ["데이터", "빅데이터", "분석"]
+    },
+    {
+        "name": "청년창업사관학교",
+        "agency": "중소벤처기업부",
+        "expected_month": "1월",
+        "category": "창업지원",
+        "keywords": ["청년", "창업", "사관학교"]
+    },
+    {
+        "name": "초기창업패키지",
+        "agency": "창업진흥원",
+        "expected_month": "2월",
+        "category": "창업지원",
+        "keywords": ["초기창업", "스타트업", "창업"]
+    },
+    {
+        "name": "그린뉴딜 스타트업 지원",
+        "agency": "환경부",
+        "expected_month": "3월",
+        "category": "환경/에너지",
+        "keywords": ["그린", "환경", "에너지", "탄소"]
+    },
+    {
+        "name": "헬스케어 스타트업 육성",
+        "agency": "보건복지부",
+        "expected_month": "4월",
+        "category": "헬스케어",
+        "keywords": ["헬스케어", "의료", "바이오", "건강"]
+    },
+    {
+        "name": "소재부품장비 기술개발",
+        "agency": "산업통상자원부",
+        "expected_month": "2월",
+        "category": "제조/소부장",
+        "keywords": ["소재", "부품", "장비", "제조"]
+    },
+    {
+        "name": "수출바우처 지원사업",
+        "agency": "KOTRA",
+        "expected_month": "1월",
+        "category": "수출/해외진출",
+        "keywords": ["수출", "해외", "글로벌", "마케팅"]
+    }
+]
+
+# ============================================
+# 요청/응답 모델
+# ============================================
+class AnalyzeRequest(BaseModel):
+    apiKey: str
+    proposalText: str
+
+class MatchRequest(BaseModel):
+    apiKey: str
+    n2bAnalysis: dict
+    region: str = "전체"
+    useRealtime: bool = True
+
+# 데모용 요청 모델 (API 키 불필요)
+class DemoAnalyzeRequest(BaseModel):
+    proposalText: str
+
+class DemoProposalRequest(BaseModel):
+    companyInfo: str
+    n2bResult: dict
+    selectedProgram: dict
+
+class DemoPptRequest(BaseModel):
+    companyInfo: str
+    n2bResult: dict
+    selectedProgram: dict
+
+# ============================================
+# 기업마당 API
+# ============================================
+async def fetch_bizinfo_programs(keyword: Optional[str] = None, count: int = 100) -> list:
+    """기업마당에서 지원사업 목록 조회"""
+    url = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do"
+    
+    params = {
+        "crtfcKey": BIZINFO_API_KEY,
+        "dataType": "xml",
+        "searchCnt": count,
+    }
+    
+    if keyword:
+        params["searchKind"] = keyword
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
             
-            <div class="space-y-3 mb-4">
-                <button onclick="selectWorry('자금이 부족해요. 운영자금, 투자, 대출 등 자금 조달이 필요합니다.')" 
-                    class="worry-btn w-full text-left px-4 py-4 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 border border-yellow-500/30 rounded-xl text-white hover:border-yellow-400" id="btn-money">
-                    <span class="text-2xl mr-3">💰</span>
-                    <span class="font-medium">자금이 부족해요</span>
-                    <span class="text-gray-400 text-sm ml-2">정책자금, 융자, 투자</span>
-                </button>
-                
-                <button onclick="selectWorry('직원 관리가 어려워요. 채용, 이직, 인건비, 노무 문제로 고민입니다.')" 
-                    class="worry-btn w-full text-left px-4 py-4 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 border border-blue-500/30 rounded-xl text-white hover:border-blue-400" id="btn-people">
-                    <span class="text-2xl mr-3">👥</span>
-                    <span class="font-medium">직원 관리가 어려워요</span>
-                    <span class="text-gray-400 text-sm ml-2">채용, 고용지원금</span>
-                </button>
-                
-                <button onclick="selectWorry('매출이 안 늘어요. 신규 고객 확보, 마케팅, 해외 진출이 필요합니다.')" 
-                    class="worry-btn w-full text-left px-4 py-4 bg-gradient-to-r from-green-500/20 to-emerald-500/20 border border-green-500/30 rounded-xl text-white hover:border-green-400" id="btn-growth">
-                    <span class="text-2xl mr-3">📈</span>
-                    <span class="font-medium">매출이 안 늘어요</span>
-                    <span class="text-gray-400 text-sm ml-2">마케팅, 수출, 판로</span>
-                </button>
-                
-                <button onclick="selectWorry('기술개발이 필요해요. R&D, 스마트공장, 신제품 개발을 하고 싶습니다.')" 
-                    class="worry-btn w-full text-left px-4 py-4 bg-gradient-to-r from-purple-500/20 to-indigo-500/20 border border-purple-500/30 rounded-xl text-white hover:border-purple-400" id="btn-tech">
-                    <span class="text-2xl mr-3">🔬</span>
-                    <span class="font-medium">기술개발이 필요해요</span>
-                    <span class="text-gray-400 text-sm ml-2">R&D, 스마트공장</span>
-                </button>
-            </div>
+            root = ET.fromstring(response.text)
+            programs = []
             
-            <div class="border-t border-white/20 pt-4">
-                <label class="block text-sm text-gray-400 mb-2">또는 직접 입력:</label>
-                <textarea id="customWorry" rows="3" class="w-full px-4 py-3 bg-white/20 border border-white/30 rounded-lg text-white placeholder-gray-400" placeholder="구체적인 고민을 적어주세요..."></textarea>
-            </div>
-        </div>
-
-        <!-- 분석 버튼 -->
-        <button onclick="analyzeWorry()" class="w-full py-4 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl font-bold text-lg mb-6 hover:opacity-90 transition">
-            🔍 N2B 분석 시작
-        </button>
-
-        <!-- 로딩 -->
-        <div id="loading" class="hidden text-center py-8">
-            <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-orange-500 border-t-transparent"></div>
-            <p class="mt-4 text-gray-300" id="loadingText">분석 중...</p>
-        </div>
-
-        <!-- N2B 결과 -->
-        <div id="n2bResult" class="hidden bg-white rounded-xl shadow-2xl p-6 mb-6">
-            <h2 class="text-xl font-bold text-gray-800 mb-4">📊 N2B 분석 결과</h2>
-            <div class="space-y-4">
-                <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg">
-                    <h3 class="font-bold text-red-700">N (Not) - 핵심 문제</h3>
-                    <p id="resultN" class="text-gray-700 mt-1"></p>
-                </div>
-                <div class="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg">
-                    <h3 class="font-bold text-blue-700">B (But) - 해결 방안</h3>
-                    <p id="resultB" class="text-gray-700 mt-1"></p>
-                </div>
-                <div class="bg-green-50 border-l-4 border-green-500 p-4 rounded-r-lg">
-                    <h3 class="font-bold text-green-700">B (Because) - 근거</h3>
-                    <p id="resultC" class="text-gray-700 mt-1"></p>
-                </div>
-                <div class="bg-purple-50 p-4 rounded-lg">
-                    <h3 class="font-bold text-purple-700 mb-2">🏷️ 키워드</h3>
-                    <div id="resultKeywords" class="flex flex-wrap gap-2"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 정책 매칭 버튼 -->
-        <button onclick="matchPrograms()" id="matchBtn" disabled class="hidden w-full py-4 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl font-bold text-lg mb-6 hover:opacity-90 transition disabled:opacity-50">
-            🎯 맞춤 정부지원사업 찾기
-        </button>
-
-        <!-- 매칭 결과 -->
-        <div id="matchResult" class="hidden">
-            <div class="flex items-center justify-between mb-4">
-                <h2 class="text-xl font-bold text-white">🏛️ 추천 정부지원사업</h2>
-                <div class="flex gap-2">
-                    <span id="totalCount" class="px-3 py-1 bg-green-500/30 text-green-300 rounded-full text-sm"></span>
-                    <span id="regionBadge" class="px-3 py-1 bg-purple-500/30 text-purple-300 rounded-full text-sm"></span>
-                </div>
-            </div>
-            <div id="programList" class="space-y-4 mb-6"></div>
+            for item in root.findall(".//item"):
+                pblanc_id = item.findtext("pblancId", "")
+                program = {
+                    "id": pblanc_id,
+                    "name": item.findtext("pblancNm", ""),
+                    "agency": item.findtext("jrsdInsttNm", ""),
+                    "target": item.findtext("trgetNm", ""),
+                    "period": item.findtext("reqstBeginEndDe", ""),
+                    "support_amount": item.findtext("sprtCn", ""),
+                    "url": f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={pblanc_id}" if pblanc_id else "",
+                    "region": item.findtext("jrsdInsttNm", "전국"),
+                    "source": "기업마당"
+                }
+                programs.append(program)
             
-            <!-- 예상 공고 -->
-            <div id="expectedSection" class="hidden">
-                <div class="flex items-center justify-between mb-4">
-                    <h2 class="text-xl font-bold text-white">🔮 2026년 예상 공고</h2>
-                    <span class="px-3 py-1 bg-orange-500/30 text-orange-300 rounded-full text-sm">미리 준비!</span>
-                </div>
-                <div id="expectedList" class="space-y-4"></div>
-            </div>
-        </div>
-
-        <!-- 다음 단계 안내 -->
-        <div id="nextStep" class="hidden bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 rounded-xl p-6 mt-6">
-            <h3 class="text-lg font-bold text-white mb-2">📝 다음 단계</h3>
-            <p class="text-gray-300 mb-4">원하는 사업을 선택하셨나요? 제안서 작성을 도와드릴 수 있어요!</p>
-            <button onclick="goToProposal()" class="px-6 py-3 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 transition">
-                제안서 작성하기 →
-            </button>
-        </div>
-    </main>
-
-    <!-- 푸터 -->
-    <footer class="text-center py-6 text-gray-500 text-sm">
-        <p>© 2024 N2B Framework | Brian Yoo</p>
-    </footer>
-
-    <script>
-        let n2bAnalysis = null;
-        let selectedWorryText = '';
-        const API_BASE = 'https://n2b-backend.onrender.com';
-
-        // 초기화 - 남은 요청 횟수 확인
-        async function checkDemoStatus() {
-            try {
-                const response = await fetch(`${API_BASE}/demo/status`);
-                const data = await response.json();
-                document.getElementById('remainingCount').textContent = data.remaining_requests;
-            } catch (error) {
-                document.getElementById('remainingCount').textContent = '확인 불가';
-            }
-        }
-        checkDemoStatus();
-
-        function selectWorry(worryText) {
-            // 모든 버튼 선택 해제
-            document.querySelectorAll('.worry-btn').forEach(btn => {
-                btn.classList.remove('ring-4', 'ring-orange-500');
-            });
+            return programs
             
-            // 선택된 버튼 강조
-            event.currentTarget.classList.add('ring-4', 'ring-orange-500');
+    except Exception as e:
+        print(f"기업마당 API 오류: {e}")
+        return []
+
+# ============================================
+# K-Startup API
+# ============================================
+async def fetch_kstartup_programs(keyword: Optional[str] = None, page: int = 1, per_page: int = 100) -> list:
+    """K-Startup에서 창업지원사업 목록 조회"""
+    url = "https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementInformation01"
+    
+    params = {
+        "ServiceKey": KSTARTUP_API_KEY,
+        "page": page,
+        "perPage": per_page,
+        "returnType": "json"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
             
-            // 텍스트 저장 및 textarea에 표시
-            selectedWorryText = worryText;
-            document.getElementById('customWorry').value = worryText;
+            data = response.json()
+            
+            items = data.get("data", [])
+            if not items:
+                items = data.get("items", [])
+            if items is None:
+                items = []
+            
+            programs = []
+            for item in items:
+                program = {
+                    "id": str(item.get("pbanc_sn", "")),
+                    "name": item.get("biz_pbanc_nm", ""),
+                    "agency": item.get("excins_nm", "창업진흥원"),
+                    "target": item.get("aply_trgt_ctnt", item.get("aply_trgt", "")),
+                    "period": f"{item.get('pbanc_rcpt_bgng_dt', '')} ~ {item.get('pbanc_rcpt_end_dt', '')}",
+                    "support_amount": item.get("supt_biz_clsfc", ""),
+                    "url": item.get("detl_pg_url", ""),
+                    "region": item.get("supt_regin", "전국"),
+                    "recruiting": item.get("rcrt_prgs_yn", ""),
+                    "source": "K-Startup"
+                }
+                programs.append(program)
+            
+            return programs
+            
+    except Exception as e:
+        print(f"K-Startup API 오류: {e}")
+        return []
+
+# ============================================
+# 지역 키워드 목록
+# ============================================
+REGION_KEYWORDS = {
+    "서울": ["서울", "강남", "강북", "마포", "송파", "영등포"],
+    "부산": ["부산", "해운대", "동래"],
+    "대구": ["대구", "수성", "달서"],
+    "인천": ["인천", "연수", "부평"],
+    "광주": ["광주"],
+    "대전": ["대전", "유성", "서구"],
+    "울산": ["울산"],
+    "세종": ["세종"],
+    "경기": ["경기", "수원", "성남", "고양", "용인", "안양", "안산", "화성", "평택", "시흥", "파주", "김포", "광명", "군포", "오산", "이천", "안성", "의왕", "하남", "여주", "양평", "동두천", "과천", "구리", "남양주", "의정부", "포천"],
+    "강원": ["강원", "춘천", "원주", "강릉", "동해", "속초"],
+    "충북": ["충북", "청주", "충주", "제천"],
+    "충남": ["충남", "천안", "아산", "공주", "논산", "서산", "당진"],
+    "전북": ["전북", "전주", "익산", "군산", "정읍"],
+    "전남": ["전남", "목포", "여수", "순천", "광양"],
+    "경북": ["경북", "포항", "경주", "구미", "김천", "안동", "영주"],
+    "경남": ["경남", "창원", "진주", "김해", "양산", "거제", "통영"],
+    "제주": ["제주", "서귀포"]
+}
+
+def get_other_regions(selected_region: str) -> list:
+    other_keywords = []
+    for region, keywords in REGION_KEYWORDS.items():
+        if region != selected_region:
+            other_keywords.extend(keywords)
+    return other_keywords
+
+def contains_other_region(name: str, selected_region: str) -> bool:
+    other_keywords = get_other_regions(selected_region)
+    name_lower = name.lower()
+    for keyword in other_keywords:
+        if keyword in name_lower:
+            return True
+    return False
+
+def is_nationwide_program(name: str, agency: str) -> bool:
+    nationwide_agencies = [
+        "중소벤처기업부", "과학기술정보통신부", "산업통상자원부", 
+        "농림축산식품부", "환경부", "보건복지부", "고용노동부",
+        "창업진흥원", "중소기업진흥공단", "KOTRA", "정보통신산업진흥원",
+        "한국산업기술진흥원", "한국에너지공단"
+    ]
+    for na in nationwide_agencies:
+        if na in agency:
+            return True
+    return False
+
+# ============================================
+# 통합 검색
+# ============================================
+async def search_all_programs(keyword: Optional[str] = None, region: str = "전체") -> list:
+    bizinfo_task = fetch_bizinfo_programs(keyword)
+    kstartup_task = fetch_kstartup_programs(keyword)
+    
+    bizinfo_results, kstartup_results = await asyncio.gather(
+        bizinfo_task, 
+        kstartup_task,
+        return_exceptions=True
+    )
+    
+    all_programs = []
+    
+    if isinstance(bizinfo_results, list):
+        all_programs.extend(bizinfo_results)
+    
+    if isinstance(kstartup_results, list):
+        all_programs.extend(kstartup_results)
+    
+    if region != "전체":
+        filtered = []
+        selected_keywords = REGION_KEYWORDS.get(region, [region])
+        
+        for p in all_programs:
+            name = p.get("name", "")
+            agency = p.get("agency", "")
+            p_region = p.get("region", "")
+            
+            if is_nationwide_program(name, agency):
+                if not contains_other_region(name, region):
+                    filtered.append(p)
+                continue
+            
+            for kw in selected_keywords:
+                if kw in name or kw in p_region:
+                    filtered.append(p)
+                    break
+            else:
+                if not contains_other_region(name, region) and not p_region:
+                    filtered.append(p)
+        
+        return filtered
+    
+    return all_programs
+
+# ============================================
+# 예상 공고 매칭
+# ============================================
+def get_expected_programs(keywords: List[str]) -> list:
+    expected = []
+    
+    for program in RECURRING_PROGRAMS:
+        match_count = 0
+        for kw in keywords:
+            for prog_kw in program["keywords"]:
+                if kw.lower() in prog_kw.lower() or prog_kw.lower() in kw.lower():
+                    match_count += 1
+                    break
+        
+        if match_count > 0:
+            expected.append({
+                "name": program["name"],
+                "agency": program["agency"],
+                "expected_month": f"2026년 {program['expected_month']}",
+                "category": program["category"],
+                "match_score": min(95, 70 + match_count * 10),
+                "type": "expected"
+            })
+    
+    expected.sort(key=lambda x: x["match_score"], reverse=True)
+    return expected[:5]
+
+# ============================================
+# API 엔드포인트 (기존)
+# ============================================
+
+@app.get("/")
+async def root():
+    return {
+        "message": "N2B Backend v3.1 - 데모 모드 지원",
+        "apis": ["기업마당", "K-Startup"],
+        "features": ["키워드 추출", "지역 필터링", "예상 공고 추천", "데모 모드"],
+        "demo_remaining": get_remaining_requests()
+    }
+
+@app.get("/api/programs/bizinfo")
+async def get_bizinfo_programs(keyword: str = None, count: int = 100):
+    programs = await fetch_bizinfo_programs(keyword, count)
+    return {"source": "기업마당", "count": len(programs), "programs": programs}
+
+@app.get("/api/programs/kstartup")
+async def get_kstartup_programs(keyword: str = None, page: int = 1):
+    programs = await fetch_kstartup_programs(keyword, page)
+    return {"source": "K-Startup", "count": len(programs), "programs": programs}
+
+@app.get("/api/programs/all")
+async def get_all_programs(keyword: str = None, region: str = "전체"):
+    programs = await search_all_programs(keyword, region)
+    return {"count": len(programs), "region": region, "programs": programs}
+
+@app.post("/analyze")
+async def analyze(request: AnalyzeRequest):
+    try:
+        client = anthropic.Anthropic(api_key=request.apiKey)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""다음 기업 정보를 N2B 프레임워크로 분석해주세요.
+
+기업 정보:
+{request.proposalText}
+
+N2B 분석:
+- N (Not/문제점): 현재 기업이 직면한 핵심 문제
+- B (But/해결책): 문제를 해결할 수 있는 방안
+- B (Because/근거): 왜 이 해결책이 효과적인지
+- 키워드: 정부지원사업 검색에 활용할 핵심 키워드 5개
+
+JSON 형식으로만 응답 (다른 텍스트 없이):
+{{"not": "...", "but": "...", "because": "...", "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]}}"""
+                }
+            ]
+        )
+        
+        return {"success": True, "result": message.content[0].text}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/match")
+async def match_programs(request: MatchRequest):
+    try:
+        region = request.region if hasattr(request, 'region') else "전체"
+        
+        if request.useRealtime:
+            all_programs = await search_all_programs(region=region)
+        else:
+            all_programs = []
+        
+        client = anthropic.Anthropic(api_key=request.apiKey)
+        
+        n2b = request.n2bAnalysis
+        keywords = n2b.get('keywords', [])
+        
+        programs_text = "\n".join([
+            f"- {p['name']} | 기관: {p.get('agency', '')} | 기간: {p.get('period', '미정')} | URL: {p.get('url', '')}" 
+            for p in all_programs[:50]
+        ])
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""다음 N2B 분석 결과에 가장 적합한 지원사업 5개를 추천해주세요.
+
+N2B 분석:
+- 문제점: {n2b.get('not', '')}
+- 해결책: {n2b.get('but', '')}
+- 근거: {n2b.get('because', '')}
+- 키워드: {', '.join(keywords) if keywords else '없음'}
+
+현재 모집중인 지원사업 (지역: {region}):
+{programs_text if programs_text else '현재 모집중인 사업이 없습니다.'}
+
+JSON 형식으로만 응답 (다른 텍스트 없이):
+[
+  {{"name": "사업명", "agency": "기관", "period": "접수기간", "url": "상세페이지URL", "reason": "추천 이유", "fit_score": 95}},
+  ...
+]
+
+적합한 사업이 없으면 빈 배열 []로 응답."""
+                }
+            ]
+        )
+        
+        expected_programs = get_expected_programs(keywords) if keywords else []
+        
+        ai_result = message.content[0].text
+        try:
+            json_match = re.search(r'\[[\s\S]*\]', ai_result)
+            if json_match:
+                matched_programs = json.loads(json_match.group())
+                for mp in matched_programs:
+                    for op in all_programs:
+                        if mp.get('name') and op.get('name') and mp['name'] in op['name']:
+                            mp['url'] = op.get('url', '')
+                            mp['period'] = op.get('period', mp.get('period', ''))
+                            break
+                ai_result = json.dumps(matched_programs, ensure_ascii=False)
+        except:
+            pass
+        
+        return {
+            "success": True, 
+            "total_programs": len(all_programs),
+            "region": region,
+            "result": ai_result,
+            "expected_programs": expected_programs
         }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        async function analyzeWorry() {
-            const worryText = document.getElementById('customWorry').value || selectedWorryText;
+@app.get("/api/programs/expected")
+async def get_expected_programs_api(keywords: str = ""):
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    expected = get_expected_programs(keyword_list) if keyword_list else RECURRING_PROGRAMS[:5]
+    return {"count": len(expected), "programs": expected}
 
-            if (!worryText) { alert('고민을 선택하거나 입력해주세요.'); return; }
+@app.get("/health")
+async def health_check():
+    bizinfo_ok = False
+    kstartup_ok = False
+    
+    try:
+        bizinfo = await fetch_bizinfo_programs(count=1)
+        bizinfo_ok = len(bizinfo) > 0
+    except:
+        pass
+    
+    try:
+        kstartup = await fetch_kstartup_programs(per_page=1)
+        kstartup_ok = len(kstartup) > 0
+    except:
+        pass
+    
+    return {
+        "status": "healthy",
+        "version": "3.1",
+        "apis": {
+            "bizinfo": "connected" if bizinfo_ok else "error",
+            "kstartup": "connected" if kstartup_ok else "error"
+        },
+        "features": ["keywords", "region_filter", "expected_programs", "demo_mode"],
+        "demo_remaining": get_remaining_requests()
+    }
 
-            showLoading(true, '🔍 N2B 분석 중...');
 
-            try {
-                const response = await fetch(`${API_BASE}/demo/analyze`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        proposalText: `기업 대표의 고민: ${worryText}\n\n이 고민을 분석하고 정부지원사업과 연결해주세요.` 
-                    })
-                });
+# ============================================
+# 데모용 엔드포인트 (API 키 내장)
+# ============================================
 
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.detail || '분석 실패');
-                }
+@app.get("/demo/status")
+async def demo_status():
+    """데모 모드 상태 확인"""
+    return {
+        "available": bool(DEMO_ANTHROPIC_API_KEY),
+        "remaining_requests": get_remaining_requests(),
+        "max_daily_requests": MAX_DAILY_REQUESTS
+    }
 
-                // 남은 요청 횟수 업데이트
-                if (data.remaining_requests !== undefined) {
-                    document.getElementById('remainingCount').textContent = data.remaining_requests;
-                }
+@app.post("/demo/analyze")
+async def demo_analyze(request: DemoAnalyzeRequest):
+    """데모용 N2B 분석 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{
+                "role": "user",
+                "content": f"""다음 기업 정보를 N2B 프레임워크로 분석해주세요.
 
-                // 결과 파싱
-                let parsed = {};
-                if (data.result) {
-                    try {
-                        const jsonMatch = data.result.match(/\{[\s\S]*\}/);
-                        if (jsonMatch) {
-                            parsed = JSON.parse(jsonMatch[0]);
-                        }
-                    } catch (e) {
-                        console.log('Parse error:', e);
-                    }
-                }
+기업 정보:
+{request.proposalText}
 
-                n2bAnalysis = {
-                    not: parsed.not || '분석 결과 없음',
-                    but: parsed.but || '분석 결과 없음',
-                    because: parsed.because || '분석 결과 없음',
-                    keywords: parsed.keywords || []
-                };
+N2B 분석:
+- N (Not/문제점): 현재 기업이 직면한 핵심 문제
+- B (But/해결책): 문제를 해결할 수 있는 방안
+- B (Because/근거): 왜 이 해결책이 효과적인지
+- 키워드: 정부지원사업 검색에 활용할 핵심 키워드 5개
 
-                document.getElementById('resultN').textContent = n2bAnalysis.not;
-                document.getElementById('resultB').textContent = n2bAnalysis.but;
-                document.getElementById('resultC').textContent = n2bAnalysis.because;
-
-                const keywordsDiv = document.getElementById('resultKeywords');
-                if (n2bAnalysis.keywords.length > 0) {
-                    keywordsDiv.innerHTML = n2bAnalysis.keywords.map(k => 
-                        `<span class="px-3 py-1 bg-purple-200 text-purple-800 rounded-full text-sm">${k}</span>`
-                    ).join('');
-                } else {
-                    keywordsDiv.innerHTML = '<span class="text-gray-500 text-sm">키워드 없음</span>';
-                }
-
-                document.getElementById('n2bResult').classList.remove('hidden');
-                document.getElementById('matchBtn').classList.remove('hidden');
-                document.getElementById('matchBtn').disabled = false;
-
-            } catch (error) {
-                alert('분석 중 오류가 발생했습니다: ' + error.message);
-            } finally {
-                showLoading(false);
-            }
+JSON 형식으로만 응답 (다른 텍스트 없이):
+{{"not": "...", "but": "...", "because": "...", "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]}}"""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
         }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        async function matchPrograms() {
-            const region = document.getElementById('regionSelect').value;
+@app.post("/demo/proposal")
+async def demo_generate_proposal(request: DemoProposalRequest):
+    """데모용 제안서 생성 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": f"""정부 R&D 제안서 초안을 작성해주세요.
 
-            if (!n2bAnalysis) { alert('먼저 N2B 분석을 수행해주세요.'); return; }
+## 기업 정보
+{request.companyInfo}
 
-            showLoading(true, '🔄 정부지원사업 검색 중...');
+## NBB 분석 결과
+- N (NOT/문제점): {request.n2bResult.get('not', '')}
+- B (BUT/해결책): {request.n2bResult.get('but', '')}
+- B (BECAUSE/근거): {request.n2bResult.get('because', '')}
 
-            try {
-                const response = await fetch(`${API_BASE}/demo/match`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        n2bAnalysis,
-                        region
-                    })
-                });
+## 선택한 지원사업
+- 사업명: {request.selectedProgram.get('name', '')}
+- 지원내용: {request.selectedProgram.get('description', '')}
 
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.detail || '매칭 실패');
-                }
+## 작성 양식
 
-                // 남은 요청 횟수 업데이트
-                if (data.remaining_requests !== undefined) {
-                    document.getElementById('remainingCount').textContent = data.remaining_requests;
-                }
+### 1. 기술개발 개요
+#### 1.1 개발 필요성
+(NBB의 N을 바탕으로 구체적으로 작성)
 
-                // 지역 배지
-                const regionText = region === '전체' ? '전국' : `전국 + ${region}`;
-                document.getElementById('regionBadge').textContent = `📍 ${regionText}`;
-                document.getElementById('totalCount').textContent = `📊 ${data.total_programs || 0}개 검색`;
+#### 1.2 개발 목적
+(NBB의 첫번째 B를 바탕으로 작성)
 
-                // 현재 모집중 파싱
-                const listDiv = document.getElementById('programList');
-                let programs = [];
-                if (data.result) {
-                    try {
-                        const jsonMatch = data.result.match(/\[[\s\S]*\]/);
-                        if (jsonMatch) {
-                            programs = JSON.parse(jsonMatch[0]);
-                        }
-                    } catch (e) {
-                        console.log('Parse error:', e);
-                    }
-                }
-                
-                if (programs.length > 0) {
-                    listDiv.innerHTML = programs.map(p => `
-                        <div class="bg-white rounded-xl p-4 card-hover transition">
-                            <div class="flex items-center gap-2 mb-2">
-                                <span class="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">모집중</span>
-                                <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">${p.agency || '정부'}</span>
-                                <span class="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">매칭 ${p.fit_score || 85}%</span>
-                            </div>
-                            <h3 class="font-bold text-gray-800">${p.name || '사업명 없음'}</h3>
-                            <p class="text-gray-600 text-sm mt-1">📅 ${p.period || '기간 미정'}</p>
-                            <p class="text-purple-600 text-sm mt-2">💡 ${p.reason || ''}</p>
-                            ${p.url && p.url !== '' ? `<a href="${p.url}" target="_blank" class="inline-block mt-3 px-4 py-2 bg-orange-500 text-white rounded-lg text-sm hover:bg-orange-600 transition">상세보기 →</a>` : ''}
-                        </div>
-                    `).join('');
-                } else {
-                    listDiv.innerHTML = `
-                        <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-center">
-                            <p class="text-yellow-700">😅 현재 모집중인 적합한 지원사업이 없습니다.</p>
-                            <p class="text-gray-600 text-sm mt-2">12월은 비수기입니다. 아래 예상 공고를 확인하세요!</p>
-                        </div>
-                    `;
-                }
+### 2. 기술개발 목표 및 내용
+#### 2.1 최종 목표
+(정량적 목표 포함)
 
-                // 예상 공고
-                const expectedSection = document.getElementById('expectedSection');
-                const expectedList = document.getElementById('expectedList');
-                const expectedPrograms = data.expected_programs || [];
-                
-                if (expectedPrograms.length > 0) {
-                    expectedSection.classList.remove('hidden');
-                    expectedList.innerHTML = expectedPrograms.map(p => `
-                        <div class="bg-white/10 backdrop-blur rounded-xl p-4 border border-orange-500/30">
-                            <div class="flex items-center gap-2 mb-2">
-                                <span class="px-2 py-1 bg-orange-500/30 text-orange-300 rounded text-xs">🔮 ${p.expected_month}</span>
-                                <span class="px-2 py-1 bg-blue-500/30 text-blue-300 rounded text-xs">${p.agency || ''}</span>
-                                <span class="px-2 py-1 bg-purple-500/30 text-purple-300 rounded text-xs">예상 ${p.match_score || 80}%</span>
-                            </div>
-                            <h3 class="font-bold text-white">${p.name}</h3>
-                            <p class="text-orange-300 text-sm mt-2">⏰ ${p.expected_month} 공고 예상</p>
-                        </div>
-                    `).join('');
-                } else {
-                    expectedSection.classList.add('hidden');
-                }
+#### 2.2 세부 개발 내용
 
-                document.getElementById('matchResult').classList.remove('hidden');
-                document.getElementById('nextStep').classList.remove('hidden');
+### 3. 추진전략 및 일정
+#### 3.1 추진체계
+#### 3.2 추진일정 (1년 기준)
 
-            } catch (error) {
-                alert('매칭 중 오류가 발생했습니다: ' + error.message);
-            } finally {
-                showLoading(false);
-            }
+### 4. 기대효과 및 활용방안
+(NBB의 두번째 B를 바탕으로 작성)
+
+### 5. 소요예산 개요
+
+실제 제출용처럼 구체적이고 설득력 있게 작성해주세요."""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
         }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        function selectProgram(name) {
-            alert(`"${name}" 선택!\n\n제안서 작성 기능은 곧 연결됩니다.`);
-        }
+class DemoMatchRequest(BaseModel):
+    n2bAnalysis: dict
+    region: str = "전체"
 
-        function goToProposal() {
-            // 제안서 데모 앱으로 이동
-            window.location.href = '제안서_생성_데모_v3.html';
-        }
+@app.post("/demo/match")
+async def demo_match_programs(request: DemoMatchRequest):
+    """데모용 정책 매칭 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        region = request.region
+        
+        # 실시간 API에서 지원사업 가져오기
+        all_programs = await search_all_programs(region=region)
+        
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        n2b = request.n2bAnalysis
+        keywords = n2b.get('keywords', [])
+        
+        programs_text = "\n".join([
+            f"- {p['name']} | 기관: {p.get('agency', '')} | 기간: {p.get('period', '미정')} | URL: {p.get('url', '')}" 
+            for p in all_programs[:50]
+        ])
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""다음 N2B 분석 결과에 가장 적합한 지원사업 5개를 추천해주세요.
 
-        function showLoading(show, text = '분석 중...') {
-            document.getElementById('loading').classList.toggle('hidden', !show);
-            document.getElementById('loadingText').textContent = text;
+N2B 분석:
+- 문제점: {n2b.get('not', '')}
+- 해결책: {n2b.get('but', '')}
+- 근거: {n2b.get('because', '')}
+- 키워드: {', '.join(keywords) if keywords else '없음'}
+
+현재 모집중인 지원사업 (지역: {region}):
+{programs_text if programs_text else '현재 모집중인 사업이 없습니다.'}
+
+JSON 형식으로만 응답 (다른 텍스트 없이):
+[
+  {{"name": "사업명", "agency": "기관", "period": "접수기간", "url": "상세페이지URL", "reason": "추천 이유", "fit_score": 95}},
+  ...
+]
+
+적합한 사업이 없으면 빈 배열 []로 응답."""
+                }
+            ]
+        )
+        
+        expected_programs = get_expected_programs(keywords) if keywords else []
+        
+        ai_result = message.content[0].text
+        try:
+            json_match = re.search(r'\[[\s\S]*\]', ai_result)
+            if json_match:
+                matched_programs = json.loads(json_match.group())
+                for mp in matched_programs:
+                    for op in all_programs:
+                        if mp.get('name') and op.get('name') and mp['name'] in op['name']:
+                            mp['url'] = op.get('url', '')
+                            mp['period'] = op.get('period', mp.get('period', ''))
+                            break
+                ai_result = json.dumps(matched_programs, ensure_ascii=False)
+        except:
+            pass
+        
+        return {
+            "success": True, 
+            "total_programs": len(all_programs),
+            "region": region,
+            "result": ai_result,
+            "expected_programs": expected_programs,
+            "remaining_requests": get_remaining_requests()
         }
-    </script>
-</body>
-</html>
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/demo/ppt")
+async def demo_generate_ppt(request: DemoPptRequest):
+    """데모용 PPT 구성안 생성 (API 키 내장)"""
+    if not DEMO_ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="데모 모드가 설정되지 않았습니다.")
+    
+    if not check_rate_limit():
+        raise HTTPException(status_code=429, detail=f"일일 요청 한도 초과 (최대 {MAX_DAILY_REQUESTS}회)")
+    
+    try:
+        client = anthropic.Anthropic(api_key=DEMO_ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=3000,
+            messages=[{
+                "role": "user",
+                "content": f"""발표자료(PPT) 구성안을 작성해주세요.
+
+## 기업 정보
+{request.companyInfo}
+
+## NBB 분석 결과
+- N (NOT): {request.n2bResult.get('not', '')}
+- B (BUT): {request.n2bResult.get('but', '')}
+- B (BECAUSE): {request.n2bResult.get('because', '')}
+
+## 선택한 지원사업: {request.selectedProgram.get('name', '')}
+
+## 발표자료 구성 (10~12슬라이드)
+
+각 슬라이드별로:
+**슬라이드 N: [제목]**
+- 핵심 내용 1
+- 핵심 내용 2
+- 핵심 내용 3
+[발표 포인트: 강조할 내용]
+
+구성:
+1. 표지
+2. 목차
+3. 기업 소개
+4. 개발 배경 및 필요성
+5. 기술 현황 및 문제점
+6. 개발 목표
+7. 핵심 기술 및 차별성
+8. 개발 내용 및 방법
+9. 추진 일정
+10. 기대 효과
+11. 사업화 계획
+12. 마무리"""
+            }]
+        )
+        
+        return {
+            "success": True, 
+            "result": message.content[0].text,
+            "remaining_requests": get_remaining_requests()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
