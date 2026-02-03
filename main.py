@@ -1,7 +1,7 @@
 # ============================================
-# 슬기로운 기업경영 - Backend v2.1
+# 슬기로운 기업경영 - Backend v2.2
 # Bizinfo + K-Startup + Claude API 연동
-# + 제안서/PPT 생성 엔드포인트 추가
+# + 제안서/PPT + 진흥원 N2B 분석
 # ============================================
 
 from fastapi import FastAPI, HTTPException
@@ -16,7 +16,7 @@ import json
 import asyncio
 import re
 
-app = FastAPI(title="N2B Backend v2.1", description="기업마당 + K-Startup + Claude 연동 + 제안서 생성")
+app = FastAPI(title="N2B Backend v2.2", description="기업마당 + K-Startup + Claude 연동 + 제안서 + 진흥원")
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +64,13 @@ class PptRequest(BaseModel):
     program_name: str
     program_description: str
     program_budget: str
+
+class AgencyAnalyzeRequest(BaseModel):
+    worry: str
+
+class AgencyDeepDiveRequest(BaseModel):
+    previous_but: str
+    messages: list = []
 
 # ============================================
 # 기업마당 API - 실제 공고 조회
@@ -302,12 +309,104 @@ N2B 분석 결과:
 
 
 # ============================================
+# wise-agency용 Claude 함수들
+# ============================================
+AGENCY_SYSTEM_PROMPT = """당신은 '슬기로운 진흥원생활' 앱의 N2B 코치입니다.
+
+성남산업진흥원 직원의 고민을 듣고 N2B(NOT-BUT-BECAUSE) 프레임워크로 분석해주세요.
+
+## N2B 프레임워크
+- NOT (N): 문제가 ~이 아니라 (표면적/잘못된 원인 부정)
+- BUT (B): ~이다 (진짜 원인 제시)
+- BECAUSE (C): 왜냐하면 ~때문이다 (근거/논리적 설명)
+
+## 핵심 원리
+1. N2B는 비교판단입니다. 모든 판단은 비교판단입니다.
+2. 가설이 먼저입니다. 먼저 N2B(가설)를 세우고 → 실행으로 증명
+
+## 능동지원 원칙
+분석만 하지 말고, 구체적인 행동을 제안하세요.
+제안 형식: "[목표]를 위해서는 [행동]을 해야 합니다"
+
+그리고 다음 행동을 능동적으로 제시하세요. "~드릴까요?"가 아니라 "~드리겠습니다"로.
+
+## 응답 형식 (반드시 JSON으로)
+{
+  "n2b": {
+    "not": "~이 아니라",
+    "but": "~이다", 
+    "because": "~때문이다"
+  },
+  "suggestion": "[목표]를 위해서는 [행동]을 해야 합니다. 구체적 제안...",
+  "nextAction": "~해드리겠습니다"
+}"""
+
+
+async def agency_analyze_with_claude(worry: str) -> dict:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2048,
+        system=AGENCY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": worry}]
+    )
+
+    text = response.content[0].text
+    json_match = re.search(r'\{[\s\S]*\}', text)
+    if json_match:
+        return json.loads(json_match.group())
+    return {
+        "n2b": {"not": "분석 중", "but": "문제의 본질을 파악하는 중입니다", "because": "조금 더 구체적인 상황을 알려주시면 정확한 분석이 가능합니다"},
+        "suggestion": text
+    }
+
+
+async def agency_deepdive_with_claude(previous_but: str, messages: list) -> dict:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    deep_prompt = f"""이전 분석에서 "{previous_but}"라고 했습니다.
+
+이것이 왜 진짜 원인인지 더 깊이 분석해주세요.
+이 원인의 더 근본적인 원인은 무엇인가요?
+
+반드시 아래 JSON 형식으로만 답변해주세요:
+{{
+  "n2b": {{
+    "not": "표면적 원인이 아니라",
+    "but": "더 근본적인 원인이다", 
+    "because": "왜냐하면 ~때문이다"
+  }},
+  "suggestion": "구체적 제안",
+  "nextAction": "다음 행동을 ~해드리겠습니다"
+}}"""
+
+    api_messages = messages + [{"role": "user", "content": deep_prompt}]
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2048,
+        system="당신은 N2B 분석 전문가입니다. 반드시 지정된 JSON 형식으로만 답변하세요.",
+        messages=api_messages
+    )
+
+    text = response.content[0].text
+    json_match = re.search(r'\{[\s\S]*\}', text)
+    if json_match:
+        return json.loads(json_match.group())
+    return {
+        "n2b": {"not": "분석 중", "but": "더 깊은 분석이 필요합니다", "because": "추가 정보가 필요합니다"},
+        "suggestion": text
+    }
+
+
+# ============================================
 # API 엔드포인트
 # ============================================
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.1", "message": "N2B Backend - Bizinfo + K-Startup + 제안서 생성"}
+    return {"status": "ok", "version": "2.2", "message": "N2B Backend - Bizinfo + K-Startup + 제안서 + 진흥원"}
 
 @app.get("/health")
 async def health():
@@ -396,6 +495,30 @@ async def get_programs(keyword: Optional[str] = None):
         "total": len(bizinfo) + len(kstartup),
         "programs": bizinfo + kstartup
     }
+
+# 6) 진흥원 N2B 분석 (wise-agency 전용)
+@app.post("/api/agency-analyze")
+async def agency_analyze(req: AgencyAnalyzeRequest):
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    
+    try:
+        result = await agency_analyze_with_claude(req.worry)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 7) 진흥원 깊이분석 (wise-agency 전용)
+@app.post("/api/agency-deepdive")
+async def agency_deepdive(req: AgencyDeepDiveRequest):
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    
+    try:
+        result = await agency_deepdive_with_claude(req.previous_but, req.messages)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
