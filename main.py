@@ -1,6 +1,7 @@
 # ============================================
-# 슬기로운 기업경영 - Backend v2.0
+# 슬기로운 기업경영 - Backend v2.1
 # Bizinfo + K-Startup + Claude API 연동
+# + 제안서/PPT 생성 엔드포인트 추가
 # ============================================
 
 from fastapi import FastAPI, HTTPException
@@ -13,8 +14,9 @@ import anthropic
 import os
 import json
 import asyncio
+import re
 
-app = FastAPI(title="N2B Backend v2.0", description="기업마당 + K-Startup + Claude 연동")
+app = FastAPI(title="N2B Backend v2.1", description="기업마당 + K-Startup + Claude 연동 + 제안서 생성")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,7 +31,7 @@ app.add_middleware(
 # ============================================
 BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
 KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")  # Render 환경변수에 설정
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 
 # ============================================
 # 요청 모델
@@ -44,6 +46,24 @@ class MatchRequest(BaseModel):
     n2b_because: str
     keywords: list[str]
     region: str = "전체"
+
+class ProposalRequest(BaseModel):
+    company_info: str
+    n2b_not: str
+    n2b_but: str
+    n2b_because: str
+    program_name: str
+    program_description: str
+    program_budget: str
+
+class PptRequest(BaseModel):
+    company_info: str
+    n2b_not: str
+    n2b_but: str
+    n2b_because: str
+    program_name: str
+    program_description: str
+    program_budget: str
 
 # ============================================
 # 기업마당 API - 실제 공고 조회
@@ -125,7 +145,7 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, per_page: int =
         return []
 
 # ============================================
-# Claude로 N2B 분석
+# Claude 호출 함수들
 # ============================================
 async def analyze_with_claude(worry: str) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
@@ -150,19 +170,16 @@ async def analyze_with_claude(worry: str) -> dict:
     )
 
     text = response.content[0].text
-    json_match = __import__('re').search(r'\{[\s\S]*\}', text)
+    json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         return json.loads(json_match.group())
     return {"not": "분석 실패", "but": "", "because": "", "keywords": []}
 
-# ============================================
-# Claude로 매칭 점수 계산
-# ============================================
+
 async def score_programs_with_claude(n2b: dict, programs: list, region: str) -> list:
     if not programs:
         return []
     
-    # 상위 30개만 Claude에게 매칭 요청 (비용 절감)
     candidates = programs[:30]
     program_list = "\n".join([
         f"{i+1}. [{p['source']}] {p['name']} | {p['agency']} | {p['period']}"
@@ -197,7 +214,7 @@ N2B 분석:
     )
 
     text = response.content[0].text
-    json_match = __import__('re').search(r'\[[\s\S]*\]', text)
+    json_match = re.search(r'\[[\s\S]*\]', text)
     
     results = []
     if json_match:
@@ -215,19 +232,88 @@ N2B 분석:
 
     return results
 
+
+async def generate_proposal_with_claude(req: ProposalRequest) -> str:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": f"""다음 정보를 바탕으로 정부지원사업 제안서 초안을 작성해주세요.
+
+기업 정보:
+{req.company_info}
+
+N2B 분석 결과:
+- NOT: {req.n2b_not}
+- BUT: {req.n2b_but}
+- BECAUSE: {req.n2b_because}
+
+선택한 지원사업:
+- 사업명: {req.program_name}
+- 설명: {req.program_description}
+- 지원 규모: {req.program_budget}
+
+제안서는 다음 섹션으로 구성해주세요:
+1. 사업 개요
+2. 추진 배경 및 필요성 (N2B 분석 기반)
+3. 사업 목표
+4. 추진 전략 및 방법
+5. 기대 효과
+
+각 섹션을 구체적으로 작성해주세요."""
+        }]
+    )
+
+    return response.content[0].text
+
+
+async def generate_ppt_with_claude(req: PptRequest) -> str:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": f"""다음 정보를 바탕으로 발표자료(PPT) 구성안을 작성해주세요.
+
+기업 정보:
+{req.company_info}
+
+N2B 분석 결과:
+- NOT: {req.n2b_not}
+- BUT: {req.n2b_but}
+- BECAUSE: {req.n2b_because}
+
+선택한 지원사업:
+- 사업명: {req.program_name}
+- 설명: {req.program_description}
+- 지원 규모: {req.program_budget}
+
+발표자료는 10-15장 분량으로 구성해주세요.
+각 슬라이드의 제목과 주요 내용을 상세히 작성해주세요."""
+        }]
+    )
+
+    return response.content[0].text
+
+
 # ============================================
 # API 엔드포인트
 # ============================================
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.0", "message": "N2B Backend - Bizinfo + K-Startup 연동"}
+    return {"status": "ok", "version": "2.1", "message": "N2B Backend - Bizinfo + K-Startup + 제안서 생성"}
 
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
 
-# 1) N2B 분석
+# 1) N2B 분석 (wise-biz + wise-proposal 공용)
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):
     if not CLAUDE_API_KEY:
@@ -239,14 +325,13 @@ async def analyze(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2) 실제 공고 매칭
+# 2) 실제 공고 매칭 (wise-biz + wise-proposal 공용)
 @app.post("/api/match")
 async def match(req: MatchRequest):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
     try:
-        # 기업마당 + K-Startup 동시 조회
         keyword = req.keywords[0] if req.keywords else None
         bizinfo_task = fetch_bizinfo_programs(keyword)
         kstartup_task = fetch_kstartup_programs(keyword)
@@ -264,7 +349,6 @@ async def match(req: MatchRequest):
             "keywords": req.keywords
         }
         
-        # Claude로 매칭 점수 계산
         matched = await score_programs_with_claude(n2b, all_programs, req.region)
         
         return {
@@ -277,7 +361,31 @@ async def match(req: MatchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3) 공고 목록 직접 조회 (디버그용)
+# 3) 제안서 초안 생성 (wise-proposal 전용)
+@app.post("/api/proposal")
+async def proposal(req: ProposalRequest):
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    
+    try:
+        text = await generate_proposal_with_claude(req)
+        return {"success": True, "content": text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 4) PPT 구성안 생성 (wise-proposal 전용)
+@app.post("/api/ppt-outline")
+async def ppt_outline(req: PptRequest):
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    
+    try:
+        text = await generate_ppt_with_claude(req)
+        return {"success": True, "content": text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 5) 공고 목록 직접 조회 (디버그용)
 @app.get("/api/programs")
 async def get_programs(keyword: Optional[str] = None):
     bizinfo = await fetch_bizinfo_programs(keyword)
