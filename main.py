@@ -1,10 +1,10 @@
 # ============================================
-# 슬기로운 기업경영 - Backend v2.2
+# 슬기로운 기업경영 - Backend v2.3
 # Bizinfo + K-Startup + Claude API 연동
-# + 제안서/PPT + 진흥원 N2B 분석
+# + 제안서/PPT + 진흥원 + 일일사용제한
 # ============================================
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -15,8 +15,9 @@ import os
 import json
 import asyncio
 import re
+from datetime import date, datetime
 
-app = FastAPI(title="N2B Backend v2.2", description="기업마당 + K-Startup + Claude 연동 + 제안서 + 진흥원")
+app = FastAPI(title="N2B Backend v2.3", description="기업마당 + K-Startup + Claude 연동 + 제안서 + 진흥원 + 사용제한")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +33,61 @@ app.add_middleware(
 BIZINFO_API_KEY = os.getenv("BIZINFO_API_KEY", "f41G7V")
 KSTARTUP_API_KEY = os.getenv("KSTARTUP_API_KEY", "47bd938c975a8989c5561a813fe66fcd68b76bfc4b4d54ca33345923b5b51897")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
+PREMIUM_KEY = os.getenv("PREMIUM_KEY", "wise2025")
+
+# ============================================
+# 일일 사용 제한 시스템
+# ============================================
+# biz/proposal: 일반 10회, 프리미엄 200회
+# agency: 100회 (프리미엄 없음)
+LIMITS = {
+    "biz": {"normal": 10, "premium": 200},
+    "proposal": {"normal": 10, "premium": 200},
+    "agency": {"normal": 100}
+}
+
+# IP별 일일 사용량 추적: { "2025-02-03": { "1.2.3.4": { "biz": 5, "proposal": 2, "agency": 3 } } }
+daily_usage: dict = {}
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_rate_limit(ip: str, app_type: str, is_premium: bool = False) -> dict:
+    """사용량 확인 및 차감. 초과 시 HTTPException 발생."""
+    today = str(date.today())
+    
+    # 날짜 바뀌면 리셋
+    if today not in daily_usage:
+        daily_usage.clear()
+        daily_usage[today] = {}
+    
+    if ip not in daily_usage[today]:
+        daily_usage[today][ip] = {"biz": 0, "proposal": 0, "agency": 0}
+    
+    usage = daily_usage[today][ip]
+    current = usage.get(app_type, 0)
+    
+    if app_type in ("biz", "proposal"):
+        limit = LIMITS[app_type]["premium"] if is_premium else LIMITS[app_type]["normal"]
+    else:
+        limit = LIMITS["agency"]["normal"]
+    
+    remaining = limit - current
+    
+    if remaining <= 0:
+        tier = "프리미엄" if is_premium else "일반"
+        raise HTTPException(
+            status_code=429,
+            detail=f"일일 사용 한도({limit}회)를 초과했습니다. ({tier})"
+        )
+    
+    usage[app_type] = current + 1
+    return {"used": current + 1, "limit": limit, "remaining": remaining - 1}
 
 # ============================================
 # 요청 모델
@@ -406,7 +462,7 @@ async def agency_deepdive_with_claude(previous_but: str, messages: list) -> dict
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.2", "message": "N2B Backend - Bizinfo + K-Startup + 제안서 + 진흥원"}
+    return {"status": "ok", "version": "2.3", "message": "N2B Backend + 일일사용제한"}
 
 @app.get("/health")
 async def health():
@@ -414,21 +470,31 @@ async def health():
 
 # 1) N2B 분석 (wise-biz + wise-proposal 공용)
 @app.post("/api/analyze")
-async def analyze(req: AnalyzeRequest):
+async def analyze(req: AnalyzeRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "biz", is_premium)
+    
     try:
         result = await analyze_with_claude(req.worry)
-        return {"success": True, "n2b": result}
+        return {"success": True, "n2b": result, "usage": rate_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 2) 실제 공고 매칭 (wise-biz + wise-proposal 공용)
 @app.post("/api/match")
-async def match(req: MatchRequest):
+async def match(req: MatchRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "biz", is_premium)
     
     try:
         keyword = req.keywords[0] if req.keywords else None
@@ -455,32 +521,47 @@ async def match(req: MatchRequest):
             "total_fetched": len(all_programs),
             "bizinfo_count": len(bizinfo_programs),
             "kstartup_count": len(kstartup_programs),
-            "matched": matched
+            "matched": matched,
+            "usage": rate_info
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 3) 제안서 초안 생성 (wise-proposal 전용)
 @app.post("/api/proposal")
-async def proposal(req: ProposalRequest):
+async def proposal(req: ProposalRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "proposal", is_premium)
+    
     try:
         text = await generate_proposal_with_claude(req)
-        return {"success": True, "content": text}
+        return {"success": True, "content": text, "usage": rate_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 4) PPT 구성안 생성 (wise-proposal 전용)
 @app.post("/api/ppt-outline")
-async def ppt_outline(req: PptRequest):
+async def ppt_outline(req: PptRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "proposal", is_premium)
+    
     try:
         text = await generate_ppt_with_claude(req)
-        return {"success": True, "content": text}
+        return {"success": True, "content": text, "usage": rate_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -498,27 +579,71 @@ async def get_programs(keyword: Optional[str] = None):
 
 # 6) 진흥원 N2B 분석 (wise-agency 전용)
 @app.post("/api/agency-analyze")
-async def agency_analyze(req: AgencyAnalyzeRequest):
+async def agency_analyze(req: AgencyAnalyzeRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
+    ip = get_client_ip(request)
+    rate_info = check_rate_limit(ip, "agency")
+    
     try:
         result = await agency_analyze_with_claude(req.worry)
-        return {"success": True, "result": result}
+        return {"success": True, "result": result, "usage": rate_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 7) 진흥원 깊이분석 (wise-agency 전용)
 @app.post("/api/agency-deepdive")
-async def agency_deepdive(req: AgencyDeepDiveRequest):
+async def agency_deepdive(req: AgencyDeepDiveRequest, request: Request):
     if not CLAUDE_API_KEY:
         raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
     
+    ip = get_client_ip(request)
+    rate_info = check_rate_limit(ip, "agency")
+    
     try:
         result = await agency_deepdive_with_claude(req.previous_but, req.messages)
-        return {"success": True, "result": result}
+        return {"success": True, "result": result, "usage": rate_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# 8) 사용량 조회
+@app.get("/api/usage")
+async def get_usage(request: Request):
+    ip = get_client_ip(request)
+    today = str(date.today())
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    
+    usage = daily_usage.get(today, {}).get(ip, {"biz": 0, "proposal": 0, "agency": 0})
+    
+    biz_limit = LIMITS["biz"]["premium"] if is_premium else LIMITS["biz"]["normal"]
+    proposal_limit = LIMITS["proposal"]["premium"] if is_premium else LIMITS["proposal"]["normal"]
+    agency_limit = LIMITS["agency"]["normal"]
+    
+    return {
+        "date": today,
+        "biz": {
+            "used": usage.get("biz", 0),
+            "limit": biz_limit,
+            "remaining": biz_limit - usage.get("biz", 0),
+            "tier": "premium" if is_premium else "normal"
+        },
+        "proposal": {
+            "used": usage.get("proposal", 0),
+            "limit": proposal_limit,
+            "remaining": proposal_limit - usage.get("proposal", 0),
+            "tier": "premium" if is_premium else "normal"
+        },
+        "agency": {
+            "used": usage.get("agency", 0),
+            "limit": agency_limit,
+            "remaining": agency_limit - usage.get("agency", 0)
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn
