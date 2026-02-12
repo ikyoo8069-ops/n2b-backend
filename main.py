@@ -836,8 +836,15 @@ async def match_bids_with_claude(n2b: dict, bids: list, keywords: list) -> list:
         return []
     
     candidates = bids[:30]
+    
+    def format_price(price):
+        try:
+            return f"{int(price):,}"
+        except:
+            return str(price)
+    
     bid_list = "\n".join([
-        f"{i+1}. [{b['bid_type']}] {b['bid_name']} | {b['agency']} | 예정가: {b.get('estimated_price', 0):,}원 | 마감: {b.get('deadline', '')}"
+        f"{i+1}. [{b['bid_type']}] {b['bid_name']} | {b['agency']} | 예정가: {format_price(b.get('estimated_price', 0))}원 | 마감: {b.get('deadline', '')}"
         for i, b in enumerate(candidates)
     ])
     
@@ -894,7 +901,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "3.2", "message": "N2B Backend + bid-match 디버깅"}
+    return {"status": "ok", "version": "3.3", "message": "N2B Backend + price 포맷 수정"}
 
 @app.get("/health")
 async def health():
