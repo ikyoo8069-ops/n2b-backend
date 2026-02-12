@@ -894,7 +894,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "3.1", "message": "N2B Backend + items 파싱 수정"}
+    return {"status": "ok", "version": "3.2", "message": "N2B Backend + bid-match 디버깅"}
 
 @app.get("/health")
 async def health():
@@ -1138,6 +1138,36 @@ async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10)
         return {"success": True, "count": len(bids), "keyword": keyword, "bid_type": bid_type, "bids": bids}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+# bid-match 디버깅용 GET 엔드포인트
+@app.get("/api/bid-match-test")
+async def bid_match_test(keyword: str = "도로", bid_type: str = "공사"):
+    """bid-match 디버깅용"""
+    try:
+        # 1. 입찰공고 검색
+        bids = await fetch_bid_announcements(keyword, bid_type, 10)
+        if not bids:
+            return {"step": "fetch", "success": False, "message": "공고 검색 결과 없음"}
+        
+        # 2. AI 매칭 (간단한 테스트용 N2B)
+        n2b = {
+            "not": "대규모 공사는 피해야 한다",
+            "but": "소규모 도로포장에 집중해야 한다",
+            "because": "경험과 장비가 있기 때문이다"
+        }
+        keywords = [keyword]
+        
+        matched = await match_bids_with_claude(n2b, bids, keywords)
+        
+        return {
+            "success": True,
+            "fetched_count": len(bids),
+            "matched_count": len(matched),
+            "matched": matched
+        }
+    except Exception as e:
+        import traceback
+        return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
 
 @app.get("/api/usage")
 async def get_usage(request: Request):
