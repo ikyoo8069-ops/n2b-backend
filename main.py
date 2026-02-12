@@ -1,8 +1,9 @@
 # ============================================
-# 슬기로운 기업경영 - Backend v2.4
+# 슬기로운 기업경영 - Backend v2.5
 # Bizinfo + K-Startup + Claude API 연동
 # + 제안서/PPT + 진흥원 + 일일사용제한
 # + 조달청 입찰/낙찰/가격 API (wise-bid)
+# + 입찰공고 N2B 매칭 기능
 # ============================================
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,7 +19,7 @@ import asyncio
 import re
 from datetime import date, datetime
 
-app = FastAPI(title="N2B Backend v2.4", description="기업마당 + K-Startup + Claude + 제안서 + 진흥원 + 조달청입찰")
+app = FastAPI(title="N2B Backend v2.5", description="기업마당 + K-Startup + Claude + 제안서 + 진흥원 + 조달청입찰 + 입찰매칭")
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,6 +148,19 @@ class BidDecisionRequest(BaseModel):
     our_cost: int
     pros: str
     cons: str
+
+# 입찰공고 매칭용 모델
+class BidAnalyzeNeedsRequest(BaseModel):
+    company_info: str  # 회사 역량, 관심분야
+    preferred_type: str = "전체"  # 물품, 공사, 용역, 외자, 전체
+    budget_range: str = ""  # 예: "1억~5억"
+
+class BidMatchRequest(BaseModel):
+    n2b_not: str
+    n2b_but: str
+    n2b_because: str
+    keywords: list[str]
+    preferred_type: str = "전체"
 
 # ============================================
 # 기업마당 API
@@ -737,12 +751,126 @@ async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
 
 
 # ============================================
+# wise-bid 입찰공고 매칭용 Claude 함수들
+# ============================================
+async def analyze_bid_needs_with_claude(company_info: str, preferred_type: str, budget_range: str) -> dict:
+    """회사 역량/관심분야를 N2B로 분석하고 입찰 검색 키워드 추출"""
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2048,
+        messages=[{
+            "role": "user",
+            "content": f"""다음 회사 정보를 바탕으로 N2B 분석과 적합한 입찰공고 검색 키워드를 추출해주세요.
+
+회사 역량/관심분야:
+{company_info}
+
+선호 입찰 유형: {preferred_type}
+선호 예산 규모: {budget_range or '제한 없음'}
+
+N2B 관점에서 분석해주세요:
+- NOT: 이 회사가 피해야 할 입찰 유형 (역량과 맞지 않는 것)
+- BUT: 이 회사에 적합한 입찰 유형 (강점을 살릴 수 있는 것)
+- BECAUSE: 그 이유 (핵심 역량, 실적, 차별화 요소)
+
+반드시 아래 JSON 형식으로만 답변하세요:
+{{
+  "n2b": {{
+    "not": "이 회사는 ~한 입찰은 피해야 한다",
+    "but": "~한 입찰에 집중해야 한다",
+    "because": "왜냐하면 ~한 강점이 있기 때문이다"
+  }},
+  "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
+  "recommended_types": ["물품", "용역"],
+  "strengths": ["강점1", "강점2"],
+  "advice": "입찰 전략 조언"
+}}"""
+        }]
+    )
+    
+    text = response.content[0].text
+    json_match = re.search(r'\{[\s\S]*\}', text)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except:
+            pass
+    return {
+        "n2b": {"not": "분석 실패", "but": "", "because": ""},
+        "keywords": [],
+        "recommended_types": [preferred_type] if preferred_type != "전체" else ["물품", "공사", "용역"],
+        "strengths": [],
+        "advice": ""
+    }
+
+
+async def match_bids_with_claude(n2b: dict, bids: list, keywords: list) -> list:
+    """입찰공고 목록에서 적합한 공고를 선별하고 점수 매기기"""
+    if not bids:
+        return []
+    
+    candidates = bids[:30]
+    bid_list = "\n".join([
+        f"{i+1}. [{b['bid_type']}] {b['bid_name']} | {b['agency']} | 예정가: {b.get('estimated_price', 0):,}원 | 마감: {b.get('deadline', '')}"
+        for i, b in enumerate(candidates)
+    ])
+    
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": f"""N2B 분석 결과를 바탕으로 아래 입찰공고 중 가장 적합한 5개를 선택하고 매칭 점수를 매겨주세요.
+
+N2B 분석:
+- NOT: {n2b.get('not', '')}
+- BUT: {n2b.get('but', '')}
+- BECAUSE: {n2b.get('because', '')}
+- 검색 키워드: {', '.join(keywords)}
+
+입찰공고 목록:
+{bid_list}
+
+반드시 아래 JSON 배열 형식으로만 답변하세요. 번호는 위 목록의 번호입니다:
+[
+  {{"index": 1, "fit_score": 92, "reason": "추천 이유", "risk": "주의사항"}},
+  {{"index": 3, "fit_score": 87, "reason": "추천 이유", "risk": "주의사항"}}
+]"""
+        }]
+    )
+    
+    text = response.content[0].text
+    json_match = re.search(r'\[[\s\S]*\]', text)
+    
+    results = []
+    if json_match:
+        try:
+            scored = json.loads(json_match.group())
+            for item in scored:
+                idx = item.get("index", 1) - 1
+                if 0 <= idx < len(candidates):
+                    bid = candidates[idx].copy()
+                    bid["fit_score"] = item.get("fit_score", 80)
+                    bid["reason"] = item.get("reason", "")
+                    bid["risk"] = item.get("risk", "")
+                    results.append(bid)
+        except:
+            pass
+    
+    return results
+
+
+# ============================================
 # API 엔드포인트
 # ============================================
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.4", "message": "N2B Backend + 조달청입찰 API"}
+    return {"status": "ok", "version": "2.5", "message": "N2B Backend + 조달청입찰 + 입찰매칭"}
 
 @app.get("/health")
 async def health():
@@ -906,6 +1034,64 @@ async def bid_decision(req: BidDecisionRequest, request: Request):
     try:
         result = await analyze_bid_decision_with_claude(req)
         return {"success": True, "result": result, "usage": rate_info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 입찰공고 매칭 엔드포인트
+@app.post("/api/bid-analyze-needs")
+async def bid_analyze_needs(req: BidAnalyzeNeedsRequest, request: Request):
+    """회사 역량/관심분야를 N2B로 분석하고 입찰 검색 키워드 추출"""
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "bid", is_premium)
+    try:
+        result = await analyze_bid_needs_with_claude(req.company_info, req.preferred_type, req.budget_range)
+        return {"success": True, "result": result, "usage": rate_info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/bid-match")
+async def bid_match(req: BidMatchRequest, request: Request):
+    """N2B 분석 결과를 바탕으로 입찰공고 매칭"""
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "bid", is_premium)
+    try:
+        # 키워드별로 입찰공고 검색
+        all_bids = []
+        bid_types = [req.preferred_type] if req.preferred_type != "전체" else ["물품", "공사", "용역"]
+        
+        for keyword in req.keywords[:3]:  # 최대 3개 키워드
+            for bid_type in bid_types:
+                bids = await fetch_bid_announcements(keyword, bid_type, 10)
+                all_bids.extend(bids)
+        
+        # 중복 제거
+        seen = set()
+        unique_bids = []
+        for bid in all_bids:
+            if bid["bid_no"] not in seen:
+                seen.add(bid["bid_no"])
+                unique_bids.append(bid)
+        
+        # AI 매칭
+        n2b = {"not": req.n2b_not, "but": req.n2b_but, "because": req.n2b_because}
+        matched = await match_bids_with_claude(n2b, unique_bids, req.keywords)
+        
+        return {
+            "success": True,
+            "total_fetched": len(unique_bids),
+            "matched": matched,
+            "usage": rate_info
+        }
     except HTTPException:
         raise
     except Exception as e:
