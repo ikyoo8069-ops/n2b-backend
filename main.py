@@ -249,16 +249,17 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
     endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoThngPPSSrch")
     url = f"https://apis.data.go.kr/1230000/BidPublicInfoService04/{endpoint}"
     
-    # 검색 기간: 3개월 전부터 오늘까지
+    # 검색 기간: 30일 전부터 오늘까지
     from datetime import timedelta
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=90)
+    start_date = end_date - timedelta(days=30)
     
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
         "numOfRows": count,
         "type": "json",
+        "inqryDiv": "1",  # 필수: 조회구분 (1=공고명)
         "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
         "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
     }
@@ -266,7 +267,6 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
     # 키워드가 있으면 추가
     if keyword and keyword.strip():
         params["bidNm"] = keyword
-        params["inqryDiv"] = "1"  # 공고명 검색
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -878,7 +878,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.8", "message": "N2B Backend + raw text 디버깅"}
+    return {"status": "ok", "version": "2.9", "message": "N2B Backend + inqryDiv 필수 추가"}
 
 @app.get("/health")
 async def health():
@@ -1129,25 +1129,25 @@ async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10)
     
     from datetime import timedelta
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=90)
+    start_date = end_date - timedelta(days=30)  # 30일로 줄임
     
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
         "numOfRows": count,
         "type": "json",
+        "inqryDiv": "1",  # 필수: 조회구분 (1=공고명)
         "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
         "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
     }
     
     if keyword and keyword.strip():
         params["bidNm"] = keyword
-        params["inqryDiv"] = "1"
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, params=params)
-            raw_text = response.text[:2000]  # 처음 2000자만
+            raw_text = response.text[:2000]
             return {
                 "success": True,
                 "url": url,
@@ -1179,4 +1179,3 @@ async def get_usage(request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
-    
