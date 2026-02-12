@@ -247,7 +247,8 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
     }
     
     endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoThngPPSSrch")
-    url = f"https://apis.data.go.kr/1230000/BidPublicInfoService04/{endpoint}"
+    # 올바른 End Point 사용
+    url = f"https://apis.data.go.kr/1230000/ad/BidPublicInfoService/{endpoint}"
     
     # 검색 기간: 30일 전부터 오늘까지
     from datetime import timedelta
@@ -878,7 +879,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.9", "message": "N2B Backend + inqryDiv 필수 추가"}
+    return {"status": "ok", "version": "3.0", "message": "N2B Backend + 조달청 API URL 수정"}
 
 @app.get("/health")
 async def health():
@@ -1125,18 +1126,19 @@ async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10)
     }
     
     endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoCnstwkPPSSrch")
-    url = f"https://apis.data.go.kr/1230000/BidPublicInfoService04/{endpoint}"
+    # 올바른 End Point
+    url = f"https://apis.data.go.kr/1230000/ad/BidPublicInfoService/{endpoint}"
     
     from datetime import timedelta
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=30)  # 30일로 줄임
+    start_date = end_date - timedelta(days=30)
     
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
         "numOfRows": count,
         "type": "json",
-        "inqryDiv": "1",  # 필수: 조회구분 (1=공고명)
+        "inqryDiv": "1",
         "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
         "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
     }
