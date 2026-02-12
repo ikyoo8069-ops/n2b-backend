@@ -249,16 +249,24 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
     endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoThngPPSSrch")
     url = f"https://apis.data.go.kr/1230000/BidPublicInfoService04/{endpoint}"
     
+    # 검색 기간: 3개월 전부터 오늘까지
+    from datetime import timedelta
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=90)
+    
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
         "numOfRows": count,
         "type": "json",
-        "bidNm": keyword,
-        "inqryDiv": "1",
-        "inqryBgnDt": (datetime.now().replace(day=1)).strftime("%Y%m%d") + "0000",
-        "inqryEndDt": datetime.now().strftime("%Y%m%d") + "2359"
+        "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
+        "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
     }
+    
+    # 키워드가 있으면 추가
+    if keyword and keyword.strip():
+        params["bidNm"] = keyword
+        params["inqryDiv"] = "1"  # 공고명 검색
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -870,7 +878,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.5", "message": "N2B Backend + 조달청입찰 + 입찰매칭"}
+    return {"status": "ok", "version": "2.6", "message": "N2B Backend + 조달청입찰 + 입찰매칭 (검색기간 확장)"}
 
 @app.get("/health")
 async def health():
@@ -1104,6 +1112,16 @@ async def market_price(keyword: str, price_type: str = "자재"):
         return {"success": True, "count": len(prices), "prices": prices}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# 테스트용 GET 엔드포인트
+@app.get("/api/bid-test")
+async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10):
+    """브라우저에서 조달청 API 테스트용"""
+    try:
+        bids = await fetch_bid_announcements(keyword, bid_type, count)
+        return {"success": True, "count": len(bids), "keyword": keyword, "bid_type": bid_type, "bids": bids}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/api/usage")
 async def get_usage(request: Request):
