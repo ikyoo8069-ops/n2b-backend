@@ -878,7 +878,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.6", "message": "N2B Backend + 조달청입찰 + 입찰매칭 (검색기간 확장)"}
+    return {"status": "ok", "version": "2.7", "message": "N2B Backend + 조달청입찰 디버깅"}
 
 @app.get("/health")
 async def health():
@@ -1116,10 +1116,45 @@ async def market_price(keyword: str, price_type: str = "자재"):
 # 테스트용 GET 엔드포인트
 @app.get("/api/bid-test")
 async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10):
-    """브라우저에서 조달청 API 테스트용"""
+    """브라우저에서 조달청 API 테스트용 - 디버깅"""
+    type_endpoints = {
+        "물품": "getBidPblancListInfoThngPPSSrch",
+        "공사": "getBidPblancListInfoCnstwkPPSSrch", 
+        "용역": "getBidPblancListInfoServcPPSSrch",
+        "외자": "getBidPblancListInfoFrgcptPPSSrch"
+    }
+    
+    endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoCnstwkPPSSrch")
+    url = f"https://apis.data.go.kr/1230000/BidPublicInfoService04/{endpoint}"
+    
+    from datetime import timedelta
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=90)
+    
+    params = {
+        "ServiceKey": PUBLIC_DATA_API_KEY,
+        "pageNo": 1,
+        "numOfRows": count,
+        "type": "json",
+        "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
+        "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
+    }
+    
+    if keyword and keyword.strip():
+        params["bidNm"] = keyword
+        params["inqryDiv"] = "1"
+    
     try:
-        bids = await fetch_bid_announcements(keyword, bid_type, count)
-        return {"success": True, "count": len(bids), "keyword": keyword, "bid_type": bid_type, "bids": bids}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params)
+            raw_data = response.json()
+            return {
+                "success": True,
+                "url": url,
+                "params": {k: v for k, v in params.items() if k != "ServiceKey"},
+                "status_code": response.status_code,
+                "raw_response": raw_data
+            }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
