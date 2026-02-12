@@ -878,7 +878,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "2.7", "message": "N2B Backend + 조달청입찰 디버깅"}
+    return {"status": "ok", "version": "2.8", "message": "N2B Backend + raw text 디버깅"}
 
 @app.get("/health")
 async def health():
@@ -1147,13 +1147,13 @@ async def bid_test(keyword: str = "", bid_type: str = "공사", count: int = 10)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, params=params)
-            raw_data = response.json()
+            raw_text = response.text[:2000]  # 처음 2000자만
             return {
                 "success": True,
                 "url": url,
                 "params": {k: v for k, v in params.items() if k != "ServiceKey"},
                 "status_code": response.status_code,
-                "raw_response": raw_data
+                "raw_text": raw_text
             }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1179,3 +1179,4 @@ async def get_usage(request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
+    
