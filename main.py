@@ -416,7 +416,7 @@ async def fetch_market_prices(keyword: str, price_type: str = "자재") -> list:
 async def analyze_with_claude(worry: str) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         messages=[{
             "role": "user",
@@ -450,7 +450,7 @@ async def score_programs_with_claude(n2b: dict, programs: list, region: str) -> 
     ])
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=4096,
         messages=[{
             "role": "user",
@@ -494,7 +494,7 @@ N2B 분석:
 async def generate_proposal_with_claude(req: ProposalRequest) -> str:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=4096,
         messages=[{
             "role": "user",
@@ -527,7 +527,7 @@ N2B 분석 결과:
 async def generate_ppt_with_claude(req: PptRequest) -> str:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=4096,
         messages=[{
             "role": "user",
@@ -579,7 +579,7 @@ AGENCY_SYSTEM_PROMPT = """당신은 '슬기로운 진흥원생활' 앱의 N2B �
 async def agency_analyze_with_claude(worry: str) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         system=AGENCY_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": worry}]
@@ -611,7 +611,7 @@ async def agency_deepdive_with_claude(previous_but: str, messages: list) -> dict
 }}"""
     api_messages = messages + [{"role": "user", "content": deep_prompt}]
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         system="당신은 N2B 분석 전문가입니다. 반드시 지정된 JSON 형식으로만 답변하세요.",
         messages=api_messages
@@ -649,7 +649,7 @@ async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bid
     bubble_rate = ((req.estimated_price - req.our_cost) / req.estimated_price * 100) if req.estimated_price > 0 else 0
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         messages=[{
             "role": "user",
@@ -721,7 +721,7 @@ async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
     profit_rate = ((req.estimated_price - req.our_cost) / req.our_cost * 100) if req.our_cost > 0 else 0
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         messages=[{
             "role": "user",
@@ -782,7 +782,7 @@ async def analyze_bid_needs_with_claude(company_info: str, preferred_type: str, 
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=2048,
         messages=[{
             "role": "user",
@@ -851,7 +851,7 @@ async def match_bids_with_claude(n2b: dict, bids: list, keywords: list) -> list:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-5",
         max_tokens=4096,
         messages=[{
             "role": "user",
