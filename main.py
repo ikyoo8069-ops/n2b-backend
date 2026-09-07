@@ -19,6 +19,15 @@ import asyncio
 import re
 from datetime import date, datetime
 
+def extract_text(response) -> str:
+    parts = []
+    for block in (response.content or []):
+        if getattr(block, "type", None) == "text":
+            t = getattr(block, "text", None)
+            if t:
+                parts.append(t)
+    return "\n".join(parts).strip()
+    
 app = FastAPI(title="N2B Backend v2.5", description="기업마당 + K-Startup + Claude + 제안서 + 진흥원 + 조달청입찰 + 입찰매칭")
 
 app.add_middleware(
