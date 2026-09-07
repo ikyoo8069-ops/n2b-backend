@@ -433,7 +433,7 @@ async def analyze_with_claude(worry: str) -> dict:
 }}"""
         }]
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         return json.loads(json_match.group())
@@ -473,7 +473,7 @@ N2B 분석:
 ]"""
         }]
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\[[\s\S]*\]', text)
     results = []
     if json_match:
@@ -521,7 +521,7 @@ N2B 분석 결과:
 5. 기대 효과"""
         }]
     )
-    return response.content[0].text
+    return extract_text(response)
 
 
 async def generate_ppt_with_claude(req: PptRequest) -> str:
@@ -549,7 +549,7 @@ N2B 분석 결과:
 발표자료는 10-15장 분량으로 구성해주세요."""
         }]
     )
-    return response.content[0].text
+    return extract_text(response)
 
 
 # ============================================
@@ -584,7 +584,7 @@ async def agency_analyze_with_claude(worry: str) -> dict:
         system=AGENCY_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": worry}]
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         return json.loads(json_match.group())
@@ -616,7 +616,7 @@ async def agency_deepdive_with_claude(previous_but: str, messages: list) -> dict
         system="당신은 N2B 분석 전문가입니다. 반드시 지정된 JSON 형식으로만 답변하세요.",
         messages=api_messages
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         return json.loads(json_match.group())
@@ -688,7 +688,7 @@ async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bid
 }}"""
         }]
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         try:
@@ -751,7 +751,7 @@ async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
 }}"""
         }]
     )
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         try:
@@ -814,7 +814,7 @@ N2B 관점에서 분석해주세요:
         }]
     )
     
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
         try:
@@ -874,7 +874,7 @@ N2B 분석:
         }]
     )
     
-    text = response.content[0].text
+    text = extract_text(response)
     json_match = re.search(r'\[[\s\S]*\]', text)
     
     results = []
