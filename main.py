@@ -1202,6 +1202,213 @@ async def get_usage(request: Request):
         "agency": {"used": usage.get("agency", 0), "limit": agency_limit, "remaining": agency_limit - usage.get("agency", 0)},
         "bid": {"used": usage.get("bid", 0), "limit": bid_limit, "remaining": bid_limit - usage.get("bid", 0), "tier": "premium" if is_premium else "normal"}
     }
+# ============================================
+# 속깊은 N2B (Deep N2B)
+# 제1원리: 모든 것은 대체 가능하다
+# 견줌의 기준: 대체했을 때 함께 풀리는 양 (실용성)
+# ============================================
+class DeepDiveRequest(BaseModel):
+    worry: str
+    layer: int = 1
+    history: list = []
+    answer: str = ""
+    best: dict = {}
+    domain: str = "기업경영"
+
+
+DEEP_N2B_RULES = """당신은 N2B 분석 엔진입니다.
+
+## 제1원리
+모든 것은 대체 가능하다.
+세상은 이미 채워져 있고, 새로 들어오는 것은 무언가를 대체하며 들어온다.
+그러므로 어떤 것도 필연이 아니며, 무엇이든 부정할 수 있다.
+
+## N2B 구조
+- NOT: 당연하다고 여겨 대체 불가능하게 보였던 것을 지목하고, 그것이 실은 대체 가능함을 밝힌다
+- BUT: 그 자리를 무엇이 대체하는지 제시한다
+- BECAUSE: 그 대체가 성립하는 근거를 밝힌다
+
+NOT은 단순한 부정이 아니다. 자리를 비우는 일이다.
+대체 가능함을 보이면 그 자리가 열리고, 그 열린 자리에 BUT이 들어선다.
+
+## 층
+한 층의 BECAUSE 안에는 또 당연하게 여겨지는 것이 있다.
+그것을 다시 대체 가능한지 물으면 다음 층이 열린다.
+대체는 끝이 없으므로 내려가는 데 한계는 없다.
+
+## 견줌의 기준 — 오직 하나
+멈출 곳을 찾을 수는 없다. 어느 층의 대체가 더 나은지 견줄 수 있을 뿐이다.
+기준은 실용성이다. 즉 이 대체로 몇 가지가 함께 풀리는가.
+
+resolved: 이 층의 대체가 성립했을 때 함께 풀리는 문제들을 구체적으로 나열한다
+utility: 그 양을 0~100으로 환산한다
+
+실행할 수 없는 대체는 아무것도 풀지 못하므로 utility가 낮다.
+하나만 푸는 대체는 아무리 뜻밖이어도 utility가 낮다.
+여러 증상이 한꺼번에 정리되는 대체가 utility가 높다.
+
+## 되물음
+다음 층으로 내려가려면 사용자에게서 새 정보가 필요하다.
+추측으로 채우지 말고, 이 층에서 갈라지는 지점을 묻는 질문 하나를 만들어라.
+선택지는 2~3개, 서로 확실히 다른 방향이어야 한다.
+
+## 되물음 금지사항 (반드시 지킬 것)
+절대 묻지 말 것:
+- 금액, 매출액, 자산, 부채 등 구체적 수치
+- 기업명, 거래처명, 인물명, 상호
+- 계약 내용, 기술 세부사항, 내부 문서
+
+구조와 방향만 물을 것:
+- 나쁜 예: "월 매출이 얼마입니까?"
+- 좋은 예: "매출이 늘고 있습니까, 줄고 있습니까, 정체입니까?"
+- 나쁜 예: "주요 거래처가 어디입니까?"
+- 좋은 예: "거래처가 한 곳에 몰려 있습니까, 분산되어 있습니까?"
+
+## 원리 중심
+개별 사례의 특수성보다 그 사례가 속한 구조를 보라.
+답은 이 경우에만 통하는 처방이 아니라, 같은 구조라면 통하는 원리여야 한다."""
+
+
+def _parse_json_block(text: str, array: bool = False):
+    pattern = r'\[[\s\S]*\]' if array else r'\{[\s\S]*\}'
+    m = re.search(pattern, text or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group())
+    except Exception:
+        return None
+
+
+async def deep_n2b_layer(req: DeepDiveRequest) -> dict:
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+
+    history_text = ""
+    for h in req.history:
+        history_text += f"\n[{h.get('layer')}층]\n"
+        history_text += f"NOT: {h.get('not','')}\n"
+        history_text += f"BUT: {h.get('but','')}\n"
+        history_text += f"BECAUSE: {h.get('because','')}\n"
+        history_text += f"함께 풀리는 것: {', '.join(h.get('resolved', []))}\n"
+        if h.get("question"):
+            history_text += f"물음: {h.get('question')}\n"
+        if h.get("answer"):
+            history_text += f"답변: {h.get('answer')}\n"
+
+    best_text = "없음"
+    if req.best:
+        best_text = (f"{req.best.get('layer')}층 / "
+                     f"NOT: {req.best.get('not','')} / "
+                     f"utility {req.best.get('utility',0)}")
+
+    prompt = f"""분석 영역: {req.domain}
+원래 고민: {req.worry}
+
+지금까지의 층:{history_text if history_text else " (없음, 이번이 1층)"}
+
+현재 가장 실용적인 층: {best_text}
+
+방금 사용자가 답한 내용: {req.answer or "(없음)"}
+
+이제 {req.layer}층의 N2B를 만드시오.
+{"이전 층의 BECAUSE 안에서 아직 당연하게 여겨지는 것을 찾아, 그것이 대체 가능한지 물으며 한 층 더 내려가시오." if req.layer > 1 else ""}
+
+반드시 아래 JSON 형식으로만 답변하시오:
+{{
+  "layer": {req.layer},
+  "not": "~을 대체 불가능하다고 여겼으나, 실은 대체 가능하다",
+  "but": "그 자리를 ~이 대체한다",
+  "because": "왜냐하면 ~때문이다",
+  "resolved": ["이 대체로 함께 풀리는 문제1", "문제2", "문제3"],
+  "utility": 70,
+  "utility_reason": "이 점수를 준 이유 한 문장",
+  "question": "다음 층으로 가기 위해 사용자에게 묻는 질문",
+  "options": ["선택지1", "선택지2", "선택지3"],
+  "info_exhausted": false
+}}"""
+
+    response = client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens=2048,
+        system=DEEP_N2B_RULES,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    data = _parse_json_block(extract_text(response))
+    if not data:
+        return {
+            "layer": req.layer,
+            "not": "분석 실패",
+            "but": "",
+            "because": "",
+            "resolved": [],
+            "utility": 0,
+            "utility_reason": "응답을 해석하지 못했습니다",
+            "question": "",
+            "options": [],
+            "info_exhausted": True
+        }
+    data["layer"] = req.layer
+    data.setdefault("resolved", [])
+    data.setdefault("utility", 0)
+    return data
+
+
+def pick_best(current: dict, best: dict) -> dict:
+    if not best:
+        return current
+    if current.get("utility", 0) > best.get("utility", 0):
+        return current
+    return best
+
+
+MAX_LAYER = 4
+NO_GAIN_LIMIT = 2
+
+
+@app.post("/api/deepdive")
+async def deepdive(req: DeepDiveRequest, request: Request):
+    """속깊은 N2B — 한 층씩 내려가며 가장 실용적인 대체를 찾는다"""
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "biz", is_premium)
+
+    try:
+        layer_result = await deep_n2b_layer(req)
+
+        prev_best = req.best or {}
+        new_best = dict(pick_best(layer_result, prev_best))
+        gained = new_best.get("layer") == layer_result.get("layer")
+
+        no_gain = 0 if gained else int(prev_best.get("_no_gain", 0)) + 1
+        new_best["_no_gain"] = no_gain
+
+        stop = False
+        stop_reason = ""
+        if req.layer >= MAX_LAYER:
+            stop, stop_reason = True, f"{MAX_LAYER}층까지 내려왔습니다"
+        elif no_gain >= NO_GAIN_LIMIT:
+            stop, stop_reason = True, "더 내려가도 함께 풀리는 양이 늘지 않습니다"
+        elif layer_result.get("info_exhausted"):
+            stop, stop_reason = True, "더 파고들 정보가 없습니다"
+        elif not layer_result.get("question"):
+            stop, stop_reason = True, "더 물을 것이 없습니다"
+
+        return {
+            "success": True,
+            "layer": layer_result,
+            "best": new_best,
+            "stop": stop,
+            "stop_reason": stop_reason,
+            "next_layer": req.layer + 1,
+            "usage": rate_info
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
