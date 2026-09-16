@@ -27,7 +27,7 @@ def extract_text(response) -> str:
             if t:
                 parts.append(t)
     return "\n".join(parts).strip()
-    
+
 app = FastAPI(title="N2B Backend v2.5", description="기업마당 + K-Startup + Claude + 제안서 + 진흥원 + 조달청입찰 + 입찰매칭")
 
 app.add_middleware(
@@ -69,31 +69,31 @@ def get_client_ip(request: Request) -> str:
 
 def check_rate_limit(ip: str, app_type: str, is_premium: bool = False) -> dict:
     today = str(date.today())
-    
+
     if today not in daily_usage:
         daily_usage.clear()
         daily_usage[today] = {}
-    
+
     if ip not in daily_usage[today]:
         daily_usage[today][ip] = {"biz": 0, "proposal": 0, "agency": 0, "bid": 0}
-    
+
     usage = daily_usage[today][ip]
     current = usage.get(app_type, 0)
-    
+
     if app_type in ("biz", "proposal", "bid"):
         limit = LIMITS[app_type]["premium"] if is_premium else LIMITS[app_type]["normal"]
     else:
         limit = LIMITS["agency"]["normal"]
-    
+
     remaining = limit - current
-    
+
     if remaining <= 0:
         tier = "프리미엄" if is_premium else "일반"
         raise HTTPException(
             status_code=429,
             detail=f"일일 사용 한도({limit}회)를 초과했습니다. ({tier})"
         )
-    
+
     usage[app_type] = current + 1
     return {"used": current + 1, "limit": limit, "remaining": remaining - 1}
 
@@ -250,20 +250,20 @@ async def fetch_kstartup_programs(keyword: Optional[str] = None, per_page: int =
 async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count: int = 20) -> list:
     type_endpoints = {
         "물품": "getBidPblancListInfoThngPPSSrch",
-        "공사": "getBidPblancListInfoCnstwkPPSSrch", 
+        "공사": "getBidPblancListInfoCnstwkPPSSrch",
         "용역": "getBidPblancListInfoServcPPSSrch",
         "외자": "getBidPblancListInfoFrgcptPPSSrch"
     }
-    
+
     endpoint = type_endpoints.get(bid_type, "getBidPblancListInfoThngPPSSrch")
     # 올바른 End Point 사용
     url = f"https://apis.data.go.kr/1230000/ad/BidPublicInfoService/{endpoint}"
-    
+
     # 검색 기간: 30일 전부터 오늘까지
     from datetime import timedelta
     end_date = datetime.now()
     start_date = end_date - timedelta(days=30)
-    
+
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
@@ -273,7 +273,7 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
         "inqryBgnDt": start_date.strftime("%Y%m%d") + "0000",
         "inqryEndDt": end_date.strftime("%Y%m%d") + "2359"
     }
-    
+
     # 키워드가 있으면 추가
     if keyword and keyword.strip():
         params["bidNm"] = keyword
@@ -284,21 +284,21 @@ async def fetch_bid_announcements(keyword: str, bid_type: str = "물품", count:
             response.raise_for_status()
             data = response.json()
             items = data.get("response", {}).get("body", {}).get("items", [])
-            
+
             # items가 없거나 빈 경우
             if not items:
                 return []
-            
+
             # items가 딕셔너리인 경우 (단일 결과)
             if isinstance(items, dict):
                 items = [items]
-            
+
             # items가 리스트 안에 딕셔너리로 감싸져 있는 경우
             if isinstance(items, list) and len(items) > 0 and isinstance(items[0], dict) and "item" in items[0]:
                 items = items[0].get("item", [])
                 if isinstance(items, dict):
                     items = [items]
-            
+
             bids = []
             for item in items:
                 if not isinstance(item, dict):
@@ -333,10 +333,10 @@ async def fetch_winning_bids(keyword: str, bid_type: str = "물품", count: int 
         "용역": "getOpengResultListInfoServcPPSSrch",
         "외자": "getOpengResultListInfoFrgcptPPSSrch"
     }
-    
+
     endpoint = type_endpoints.get(bid_type, "getOpengResultListInfoThngPPSSrch")
     url = f"https://apis.data.go.kr/1230000/ScsbidInfoService/{endpoint}"
-    
+
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
@@ -384,10 +384,10 @@ async def fetch_market_prices(keyword: str, price_type: str = "자재") -> list:
         "자재": "getStdMktPrcList",
         "시공": "getMrktStnPrcList"
     }
-    
+
     endpoint = type_endpoints.get(price_type, "getStdMktPrcList")
     url = f"https://apis.data.go.kr/1230000/PriceInfoService/{endpoint}"
-    
+
     params = {
         "ServiceKey": PUBLIC_DATA_API_KEY,
         "pageNo": 1,
@@ -420,33 +420,106 @@ async def fetch_market_prices(keyword: str, price_type: str = "자재") -> list:
         return []
 
 # ============================================
+# N2B 공통 규칙 (1층과 속깊은 N2B가 함께 사용)
+# ============================================
+N2B_CORE = """## N2B 세 마디
+- NOT: 엣지에 가서 시비를 걸어라
+- BUT: 나눔으로 대안을 찾아라
+- BECAUSE: 사례로 증명하라
+
+## 제1원리
+모든 것은 대체 가능하다.
+세상은 이미 채워져 있고, 새로 들어오는 것은 무언가를 대체하며 들어온다.
+그러므로 어떤 것도 필연이 아니다.
+
+## NOT — 엣지를 찾아 시비를 건다
+엣지란 그 분야에서 지금 자리를 장악하고 있는 것이다.
+표준, 관행, 당연하게 여겨지는 방식이 엣지다.
+
+엣지의 조건 두 가지를 반드시 확인하라.
+1) 장악력: 그 자리를 확실히 쥐고 있는가. 크기는 상관없다. 작아도 확실히 쥐고 있으면 엣지다.
+   여럿이 나눠 쓰고 있거나 아무도 안 쓰는 자리는 엣지가 아니다.
+2) 실행 가능성: 사용자가 칠 수 있는 자리인가. 남의 판이면 대장을 찾아도 못 친다.
+
+둘 중 하나라도 없으면 어설픈 것이며 엣지가 아니다. 다시 찾아라.
+
+사용자가 말한 증상을 부정하지 마라. 장악하고 있는 것을 부정하라.
+엣지에는 장점이 있다. 장점이 있어서 그 자리를 쥐었다.
+그러나 장점이 큰 만큼 단점도 크다. 그 뒷면을 짚는 것이 시비를 거는 일이다.
+
+## BUT — 나눔으로 대안을 찾는다
+엣지는 여러 가지를 한 덩어리로 묶어 쥐고 있다. 그것이 장악의 방법이자 약점이다.
+뭉친 지점을 찾아 나누면, 통째로는 불가능했던 대체가 한 자리에서는 가능해진다.
+
+나누는 축의 예:
+- 시간으로 나눈다 (교차로의 뭉친 흐름 → 신호등)
+- 공간으로 나눈다 (교차로의 뭉친 흐름 → 고가도로, 지하차도)
+- 기능으로 나눈다 (벽의 뭉친 차단 기능 → 문, 창문)
+- 관점으로 나눈다 (천동설의 중심과 운동 → 지동설)
+- 상태, 조건, 주체, 책임으로 나눈다
+
+대안은 엣지를 통째로 대체하는 것이 아니다.
+나눈 자리 하나를 차지하는 것이다.
+
+## BECAUSE — 사례로 증명한다
+이유는 논리가 아니라 사례에서 나온다.
+이 대체가 성립한다면 무엇이 함께 풀리는지 구체적으로 나열하라.
+
+## 대장과 졸개
+나누면 그중 하나가 나머지를 붙들고 있다. 그것이 대장이다.
+졸개를 치면 하나가 풀리고, 대장을 치면 여럿이 한꺼번에 딸려온다.
+
+## 원리 중심
+개별 사례의 특수성보다 그 사례가 속한 구조를 보라.
+답은 이 경우에만 통하는 처방이 아니라, 같은 구조라면 통하는 원리여야 한다.
+
+## 문장 작성 규칙
+- 짧고 단정하게 쓴다. 컨설팅 보고서투를 쓰지 않는다.
+- "체계적인", "전략적인", "역량 강화" 같은 빈 말을 쓰지 않는다.
+- 무엇을 무엇으로 대체하는지 구체적으로 지목한다."""
+
+
+# ============================================
 # Claude 호출 함수들
 # ============================================
 async def analyze_with_claude(worry: str) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     response = client.messages.create(
         model="claude-sonnet-5",
-        max_tokens=2048,
+        max_tokens=4096,
+        system="당신은 N2B 분석 엔진입니다.\n\n" + N2B_CORE,
         messages=[{
             "role": "user",
             "content": f"""기업 대표의 고민: {worry}
 
-이 고민을 N2B(NOT-BUT-BECAUSE) 프레임워크로 분석하고, 정부지원사업 검색 키워드를 추출해주세요.
+이 고민이 놓인 분야에서 엣지를 찾아 시비를 걸고, 나눔으로 대안을 세우시오.
+그리고 정부지원사업 검색 키워드를 추출하시오.
 
-반드시 아래 JSON 형식으로만 답변하세요:
+반드시 아래 JSON 형식으로만 답변하세요. 다른 말은 쓰지 마시오:
 {{
-  "not": "핵심 문제가 ~이 아니라",
-  "but": "진짜 문제는 ~이다",
+  "edge": "이 분야에서 지금 자리를 장악하고 있는 것",
+  "lumped": "그 엣지가 무엇들을 한 덩어리로 묶어 쥐고 있는가",
+  "divide_axis": "어떤 축으로 나누었는가",
+  "not": "~을 대체 불가능하다고 여겼으나, 실은 대체 가능하다",
+  "but": "나눈 자리에 ~이 들어선다",
   "because": "왜냐하면 ~때문이다",
   "keywords": ["키워드1", "키워드2", "키워드3"]
 }}"""
         }]
     )
-    text = extract_text(response)
-    json_match = re.search(r'\{[\s\S]*\}', text)
+    raw = extract_text(response)
+    json_match = re.search(r'\{[\s\S]*\}', raw)
     if json_match:
-        return json.loads(json_match.group())
-    return {"not": "분석 실패", "but": "", "because": "", "keywords": []}
+        try:
+            return json.loads(json_match.group())
+        except Exception:
+            pass
+    return {
+        "not": "분석 실패 — AI 응답을 아래에 그대로 표시합니다",
+        "but": raw[:600] if raw else "(응답이 비어 있음)",
+        "because": "",
+        "keywords": []
+    }
 
 
 async def score_programs_with_claude(n2b: dict, programs: list, region: str) -> list:
@@ -640,7 +713,7 @@ async def agency_deepdive_with_claude(previous_but: str, messages: list) -> dict
 # ============================================
 async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bids: list) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-    
+
     if winning_bids:
         rates = [b["winning_rate"] for b in winning_bids if b["winning_rate"] > 0]
         avg_rate = sum(rates) / len(rates) if rates else 0
@@ -654,9 +727,9 @@ async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bid
     else:
         avg_rate = 88.0
         winning_info = "유사 입찰 데이터가 없어 일반적인 낙찰률(88%)을 기준으로 분석합니다."
-    
+
     bubble_rate = ((req.estimated_price - req.our_cost) / req.estimated_price * 100) if req.estimated_price > 0 else 0
-    
+
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens=2048,
@@ -704,7 +777,7 @@ async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bid
             return json.loads(json_match.group())
         except:
             pass
-    
+
     recommended_rate = avg_rate if avg_rate > 0 else 88.0
     return {
         "n2b": {
@@ -728,7 +801,7 @@ async def analyze_bid_price_with_claude(req: BidPriceAnalyzeRequest, winning_bid
 async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     profit_rate = ((req.estimated_price - req.our_cost) / req.our_cost * 100) if req.our_cost > 0 else 0
-    
+
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens=2048,
@@ -767,7 +840,7 @@ async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
             return json.loads(json_match.group())
         except:
             pass
-    
+
     decision = "참여" if profit_rate > 10 else "조건부 참여" if profit_rate > 5 else "불참"
     return {
         "decision": decision,
@@ -789,7 +862,7 @@ async def analyze_bid_decision_with_claude(req: BidDecisionRequest) -> dict:
 async def analyze_bid_needs_with_claude(company_info: str, preferred_type: str, budget_range: str) -> dict:
     """회사 역량/관심분야를 N2B로 분석하고 입찰 검색 키워드 추출"""
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-    
+
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens=2048,
@@ -822,7 +895,7 @@ N2B 관점에서 분석해주세요:
 }}"""
         }]
     )
-    
+
     text = extract_text(response)
     json_match = re.search(r'\{[\s\S]*\}', text)
     if json_match:
@@ -843,22 +916,22 @@ async def match_bids_with_claude(n2b: dict, bids: list, keywords: list) -> list:
     """입찰공고 목록에서 적합한 공고를 선별하고 점수 매기기"""
     if not bids:
         return []
-    
+
     candidates = bids[:30]
-    
+
     def format_price(price):
         try:
             return f"{int(price):,}"
         except:
             return str(price)
-    
+
     bid_list = "\n".join([
         f"{i+1}. [{b['bid_type']}] {b['bid_name']} | {b['agency']} | 예정가: {format_price(b.get('estimated_price', 0))}원 | 마감: {b.get('deadline', '')}"
         for i, b in enumerate(candidates)
     ])
-    
+
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-    
+
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens=4096,
@@ -882,10 +955,10 @@ N2B 분석:
 ]"""
         }]
     )
-    
+
     text = extract_text(response)
     json_match = re.search(r'\[[\s\S]*\]', text)
-    
+
     results = []
     if json_match:
         try:
@@ -900,7 +973,7 @@ N2B 분석:
                     results.append(bid)
         except:
             pass
-    
+
     return results
 
 
@@ -910,7 +983,7 @@ N2B 분석:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "version": "3.3", "message": "N2B Backend + price 포맷 수정"}
+    return {"status": "ok", "version": "3.4", "message": "N2B Backend + 엣지/나눔 규칙 적용"}
 
 @app.get("/health")
 async def health():
@@ -1108,12 +1181,12 @@ async def bid_match(req: BidMatchRequest, request: Request):
         # 키워드별로 입찰공고 검색
         all_bids = []
         bid_types = [req.preferred_type] if req.preferred_type != "전체" else ["물품", "공사", "용역"]
-        
+
         for keyword in req.keywords[:3]:  # 최대 3개 키워드
             for bid_type in bid_types:
                 bids = await fetch_bid_announcements(keyword, bid_type, 10)
                 all_bids.extend(bids)
-        
+
         # 중복 제거
         seen = set()
         unique_bids = []
@@ -1121,11 +1194,11 @@ async def bid_match(req: BidMatchRequest, request: Request):
             if bid["bid_no"] not in seen:
                 seen.add(bid["bid_no"])
                 unique_bids.append(bid)
-        
+
         # AI 매칭
         n2b = {"not": req.n2b_not, "but": req.n2b_but, "because": req.n2b_because}
         matched = await match_bids_with_claude(n2b, unique_bids, req.keywords)
-        
+
         return {
             "success": True,
             "total_fetched": len(unique_bids),
@@ -1164,7 +1237,7 @@ async def bid_match_test(keyword: str = "도로", bid_type: str = "공사"):
         bids = await fetch_bid_announcements(keyword, bid_type, 10)
         if not bids:
             return {"step": "fetch", "success": False, "message": "공고 검색 결과 없음"}
-        
+
         # 2. AI 매칭 (간단한 테스트용 N2B)
         n2b = {
             "not": "대규모 공사는 피해야 한다",
@@ -1172,9 +1245,9 @@ async def bid_match_test(keyword: str = "도로", bid_type: str = "공사"):
             "because": "경험과 장비가 있기 때문이다"
         }
         keywords = [keyword]
-        
+
         matched = await match_bids_with_claude(n2b, bids, keywords)
-        
+
         return {
             "success": True,
             "fetched_count": len(bids),
@@ -1202,10 +1275,13 @@ async def get_usage(request: Request):
         "agency": {"used": usage.get("agency", 0), "limit": agency_limit, "remaining": agency_limit - usage.get("agency", 0)},
         "bid": {"used": usage.get("bid", 0), "limit": bid_limit, "remaining": bid_limit - usage.get("bid", 0), "tier": "premium" if is_premium else "normal"}
     }
+
+
 # ============================================
 # 속깊은 N2B (Deep N2B)
-# 제1원리: 모든 것은 대체 가능하다
-# 견줌의 기준: 대체했을 때 함께 풀리는 양 (실용성)
+# NOT  엣지에 가서 시비를 걸어라
+# BUT  나눔으로 대안을 찾아라
+# BECAUSE  사례로 증명하라
 # ============================================
 class DeepDiveRequest(BaseModel):
     worry: str
@@ -1215,64 +1291,22 @@ class DeepDiveRequest(BaseModel):
     best: dict = {}
     domain: str = "기업경영"
 
+
 DEEP_N2B_RULES = """당신은 N2B 분석 엔진입니다.
 
-## N2B 세 마디
-- NOT: 엣지에 가서 시비를 걸어라
-- BUT: 나눔으로 대안을 찾아라
-- BECAUSE: 사례로 증명하라
-
-## 제1원리
-모든 것은 대체 가능하다.
-세상은 이미 채워져 있고, 새로 들어오는 것은 무언가를 대체하며 들어온다.
-그러므로 어떤 것도 필연이 아니다.
-
-## NOT — 엣지를 찾아 시비를 건다
-엣지란 그 분야에서 지금 자리를 장악하고 있는 것이다.
-표준, 관행, 당연하게 여겨지는 방식이 엣지다.
-
-엣지의 조건 두 가지를 반드시 확인하라.
-1) 장악력: 그 자리를 확실히 쥐고 있는가. 크기는 상관없다. 작아도 확실히 쥐고 있으면 엣지다.
-   여럿이 나눠 쓰고 있거나 아무도 안 쓰는 자리는 엣지가 아니다.
-2) 실행 가능성: 사용자가 칠 수 있는 자리인가. 남의 판이면 대장을 찾아도 못 친다.
-
-둘 중 하나라도 없으면 어설픈 것이며 엣지가 아니다. 다시 찾아라.
-
-엣지에는 장점이 있다. 장점이 있어서 그 자리를 쥐었다.
-그러나 장점이 큰 만큼 단점도 크다. 그 뒷면을 짚는 것이 시비를 거는 일이다.
-
-## BUT — 나눔으로 대안을 찾는다
-엣지는 여러 가지를 한 덩어리로 묶어 쥐고 있다. 그것이 장악의 방법이자 약점이다.
-뭉친 지점을 찾아 나누면, 통째로는 불가능했던 대체가 한 자리에서는 가능해진다.
-
-나누는 축의 예:
-- 시간으로 나눈다 (교차로의 뭉친 흐름 → 신호등)
-- 공간으로 나눈다 (교차로의 뭉친 흐름 → 고가도로, 지하차도)
-- 기능으로 나눈다 (벽의 뭉친 차단 기능 → 문, 창문)
-- 관점으로 나눈다 (천동설의 중심과 운동 → 지동설)
-- 상태, 조건, 주체, 책임으로 나눈다
-
-대안은 엣지를 통째로 대체하는 것이 아니다.
-나눈 자리 하나를 차지하는 것이다.
-
-## BECAUSE — 사례로 증명한다
-이유는 논리가 아니라 사례에서 나온다.
-이 대체가 성립한다면 무엇이 함께 풀리는지 구체적으로 나열하라.
-
-## 대장과 졸개
-나누면 그중 하나가 나머지를 붙들고 있다. 그것이 대장이다.
-졸개를 치면 하나가 풀리고, 대장을 치면 여럿이 한꺼번에 딸려온다.
-
-resolved: 이 대체로 함께 풀리는 것들을 구체적으로 나열한다
-utility: 0~100. 대장을 쳤으면 높고, 졸개를 쳤으면 낮다
-  - 실행할 수 없는 대체는 아무것도 풀지 못하므로 낮다
-  - 하나만 푸는 대체는 아무리 뜻밖이어도 낮다
-  - 여러 개가 한꺼번에 딸려오는 대체가 높다
+""" + N2B_CORE + """
 
 ## 층
 한 층의 BECAUSE 안에는 또 당연하게 여겨지는 것이 있다.
 그것을 다시 엣지로 보고 시비를 걸면 다음 층이 열린다.
 대체는 끝이 없으므로 멈출 곳을 찾을 수는 없다. 어느 층이 대장인지 견줄 수 있을 뿐이다.
+
+## 판정
+resolved: 이 대체로 함께 풀리는 것들을 구체적으로 나열한다
+utility: 0~100. 대장을 쳤으면 높고, 졸개를 쳤으면 낮다
+  - 실행할 수 없는 대체는 아무것도 풀지 못하므로 낮다
+  - 하나만 푸는 대체는 아무리 뜻밖이어도 낮다
+  - 여러 개가 한꺼번에 딸려오는 대체가 높다
 
 ## 되물음
 다음 층으로 내려가려면 사용자에게서 새 정보가 필요하다.
@@ -1286,10 +1320,9 @@ utility: 0~100. 대장을 쳤으면 높고, 졸개를 쳤으면 낮다
 - 나쁜 예: "월 매출이 얼마입니까?"  좋은 예: "매출이 늘고 있습니까, 줄고 있습니까?"
 - 나쁜 예: "주요 거래처가 어디입니까?"  좋은 예: "거래처가 한 곳에 몰려 있습니까, 분산되어 있습니까?"
 
-## 원리 중심
-개별 사례의 특수성보다 그 사례가 속한 구조를 보라.
-답은 이 경우에만 통하는 처방이 아니라, 같은 구조라면 통하는 원리여야 한다."""
-
+## 출력 규칙
+반드시 JSON 하나만 출력한다. 설명, 머리말, 코드블록 표시를 붙이지 않는다.
+각 항목은 한 문장으로 짧게 쓴다. resolved는 3개 이내로 쓴다."""
 
 
 def _parse_json_block(text: str, array: bool = False):
@@ -1309,6 +1342,8 @@ async def deep_n2b_layer(req: DeepDiveRequest) -> dict:
     history_text = ""
     for h in req.history:
         history_text += f"\n[{h.get('layer')}층]\n"
+        if h.get("edge"):
+            history_text += f"엣지: {h.get('edge')}\n"
         history_text += f"NOT: {h.get('not','')}\n"
         history_text += f"BUT: {h.get('but','')}\n"
         history_text += f"BECAUSE: {h.get('because','')}\n"
@@ -1334,19 +1369,19 @@ async def deep_n2b_layer(req: DeepDiveRequest) -> dict:
 방금 사용자가 답한 내용: {req.answer or "(없음)"}
 
 이제 {req.layer}층의 N2B를 만드시오.
-{"이전 층의 BECAUSE 안에서 아직 당연하게 여겨지는 것을 찾아, 그것이 대체 가능한지 물으며 한 층 더 내려가시오." if req.layer > 1 else ""}
+{"이전 층의 BECAUSE 안에서 아직 당연하게 여겨지는 것을 찾아, 그것을 엣지로 보고 시비를 걸며 한 층 더 내려가시오." if req.layer > 1 else ""}
 
-반드시 아래 JSON 형식으로만 답변하시오:
+JSON 하나만 출력하시오:
 {{
   "layer": {req.layer},
-  "edge": "이 층에서 찾은 엣지 — 지금 그 자리를 장악하고 있는 것",
-  "edge_grip": "그 엣지가 어떻게 자리를 쥐고 있는가 (장악의 근거)",
+  "edge": "이 층의 엣지 — 지금 그 자리를 장악하고 있는 것",
+  "edge_grip": "그 엣지가 어떻게 자리를 쥐고 있는가",
   "lumped": "그 엣지가 무엇들을 한 덩어리로 묶어 쥐고 있는가",
-  "divide_axis": "어떤 축으로 나누었는가 (시간/공간/기능/관점/상태 등)",
+  "divide_axis": "어떤 축으로 나누었는가",
   "not": "~을 대체 불가능하다고 여겼으나, 실은 대체 가능하다",
   "but": "나눈 자리에 ~이 들어선다",
   "because": "왜냐하면 ~때문이다",
-  "resolved": ["이 대체로 함께 풀리는 문제1", "문제2", "문제3"],
+  "resolved": ["함께 풀리는 것1", "함께 풀리는 것2", "함께 풀리는 것3"],
   "utility": 70,
   "utility_reason": "이 점수를 준 이유 한 문장",
   "question": "다음 층으로 가기 위해 사용자에게 묻는 질문",
@@ -1356,17 +1391,18 @@ async def deep_n2b_layer(req: DeepDiveRequest) -> dict:
 
     response = client.messages.create(
         model="claude-sonnet-5",
-        max_tokens=2048,
+        max_tokens=8192,
         system=DEEP_N2B_RULES,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    data = _parse_json_block(extract_text(response))
+    raw = extract_text(response)
+    data = _parse_json_block(raw)
     if not data:
         return {
             "layer": req.layer,
-            "not": "분석 실패",
-            "but": "",
+            "not": "분석 실패 — AI 응답을 아래에 그대로 표시합니다",
+            "but": raw[:600] if raw else "(응답이 비어 있음)",
             "because": "",
             "resolved": [],
             "utility": 0,
@@ -1436,6 +1472,7 @@ async def deepdive(req: DeepDiveRequest, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
