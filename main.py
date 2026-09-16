@@ -1474,6 +1474,207 @@ async def deepdive(req: DeepDiveRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================
+# wise-expert — 전문가 이력에서 학회 공동사업 기획
+# ============================================
+class ExpertTraceRequest(BaseModel):
+    profile: str
+    interest: str = ""
+    regret: str = ""
+    society: str = "한국자산관리학회"
+    society_scope: str = "경영·기술·금융·부동산·데이터 및 유·무형 자산관리 전반. SOC(도로·철도·항만·지하시설물·상하수도·가스·환경), 에너지(화력·수력·원자력·발전기술·운영·송전·배전), 산업(석유화학·반도체·자동차·고무·IT·철강·조선·어선·안전)"
+
+
+class ExpertDraftRequest(BaseModel):
+    profile: str
+    trace: str = ""
+    topic: str = ""
+    edge: str = ""
+    lumped: str = ""
+    divide_axis: str = ""
+    alternative: str = ""
+    why_together: str = ""
+    need_expertise: list = []
+    society: str = "한국자산관리학회"
+
+
+EXPERT_RULES = """당신은 N2B 기반 사업기획 엔진입니다.
+
+""" + N2B_CORE + """
+
+## 이 작업의 특수 조건
+전문가 개인의 과제를 만드는 것이 아니다.
+그 전문가와 학회가 함께 해야만 가능한 사업을 기획하는 것이다.
+
+따라서 엣지는 다음 자리에서 찾아야 한다.
+- 그 전문가의 전문성과 학회의 자산관리 영역이 겹치는 자리
+- 전문가 혼자 할 수 있는 것은 제외한다
+- 학회의 다른 전문성(회계·세무·법률·기술·부동산·데이터)이 필요한 것만 남긴다
+
+판정 기준: 혼자 할 때보다 함께 할 때 풀리는 양이 늘어나는가.
+늘지 않으면 그것은 개인 과제이며 이 기획의 대상이 아니다.
+
+## 대체의 궤적
+전문가의 이력은 그가 무엇을 대체해왔는지의 기록이다.
+논문, 특허, 수행 과제, 개발 기술, 상훈을 읽고 그 궤적을 찾아라.
+궤적이 보이면 다음에 대체할 자리가 보인다.
+
+이력에 없는 것은 추측하지 마라.
+추측이 필요한 대목은 따로 표시하여 본인 확인을 요청한다.
+
+## 문장 작성 규칙
+- 짧고 단정하게. 컨설팅 보고서투를 쓰지 않는다.
+- "체계적", "전략적", "역량 강화", "시너지" 같은 빈 말을 쓰지 않는다.
+- 무엇을 무엇으로 대체하는지 구체적으로 지목한다.
+- 반드시 JSON 하나만 출력한다. 설명이나 코드블록 표시를 붙이지 않는다."""
+
+
+@app.post("/api/expert-trace")
+async def expert_trace(req: ExpertTraceRequest, request: Request):
+    """전문가 이력에서 대체의 궤적을 읽고, 학회와 함께 할 사업 후보를 뽑는다"""
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "proposal", is_premium)
+
+    try:
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=8192,
+            system=EXPERT_RULES,
+            messages=[{
+                "role": "user",
+                "content": f"""## 전문가 이력·포트폴리오
+{req.profile}
+
+## 지금 관심 있는 것
+{req.interest or "(미입력)"}
+
+## 최근 아쉬웠던 것
+{req.regret or "(미입력)"}
+
+## 학회
+{req.society}
+활동 영역: {req.society_scope}
+
+---
+
+이 전문가의 이력을 읽고 대체의 궤적을 찾으시오.
+그리고 그 궤적과 학회의 자산관리 영역이 겹치는 자리에서 엣지를 찾아,
+학회와 함께 해야만 가능한 사업 후보 3개를 제시하시오.
+
+JSON 하나만 출력하시오:
+{{
+  "trace": "이 전문가가 무엇을 무엇으로 대체해왔는가 — 두세 문장",
+  "trace_evidence": ["궤적의 근거가 되는 이력 항목1", "항목2", "항목3"],
+  "core_strength": "다른 사람이 갖기 어려운 이 전문가만의 자리 한 문장",
+  "overlap": "이 전문성과 자산관리가 겹치는 자리",
+  "candidates": [
+    {{
+      "title": "사업 후보 이름",
+      "edge": "이 사업이 시비를 거는 엣지 — 지금 그 자리를 장악하고 있는 것",
+      "lumped": "그 엣지가 무엇들을 한 덩어리로 묶어 쥐고 있는가",
+      "divide_axis": "어떤 축으로 나누는가",
+      "alternative": "나눈 자리에 무엇이 들어서는가",
+      "resolved": ["함께 풀리는 것1", "함께 풀리는 것2", "함께 풀리는 것3"],
+      "why_together": "왜 전문가 혼자로는 안 되고 학회와 함께여야 하는가",
+      "need_expertise": ["필요한 다른 전문분야1", "분야2"],
+      "utility": 70
+    }}
+  ],
+  "to_confirm": ["이력만으로는 알 수 없어 본인 확인이 필요한 것1", "것2", "것3"]
+}}"""
+            }]
+        )
+        raw = extract_text(response)
+        data = _parse_json_block(raw)
+        if not data:
+            return {"success": False, "raw": raw[:1500], "message": "응답을 해석하지 못했습니다", "usage": rate_info}
+        data.setdefault("candidates", [])
+        data.setdefault("to_confirm", [])
+        return {"success": True, "result": data, "usage": rate_info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/expert-draft")
+async def expert_draft(req: ExpertDraftRequest, request: Request):
+    """선택한 사업 후보로 기획서 초안을 작성한다"""
+    if not CLAUDE_API_KEY:
+        raise HTTPException(status_code=500, detail="CLAUDE_API_KEY가 설정되지 않았습니다")
+    ip = get_client_ip(request)
+    is_premium = request.headers.get("x-premium-key") == PREMIUM_KEY
+    rate_info = check_rate_limit(ip, "proposal", is_premium)
+
+    try:
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=8192,
+            system=EXPERT_RULES,
+            messages=[{
+                "role": "user",
+                "content": f"""## 전문가 이력·포트폴리오
+{req.profile}
+
+## 대체의 궤적
+{req.trace or "(미확인)"}
+
+## 선택한 사업
+- 사업명: {req.topic}
+- 엣지: {req.edge}
+- 뭉쳐 있는 것: {req.lumped}
+- 나눈 축: {req.divide_axis}
+- 들어설 대안: {req.alternative}
+- 함께여야 하는 이유: {req.why_together}
+- 필요한 다른 전문분야: {', '.join(req.need_expertise) if req.need_expertise else "(미정)"}
+
+## 학회
+{req.society}
+
+---
+
+이 사업의 기획서 초안을 작성하시오.
+전문가에게 보내어 심층 검토를 요청할 문서다.
+따라서 완성본이 아니라 **고칠 데가 보이는 초안**이어야 한다.
+추측으로 채운 대목은 숨기지 말고 to_confirm에 적어 본인 확인을 요청하라.
+
+JSON 하나만 출력하시오:
+{{
+  "title": "사업명",
+  "one_line": "이 사업을 한 문장으로",
+  "background": "추진 배경 — 지금 무엇이 그 자리를 장악하고 있는가 (3~4문장)",
+  "necessity": "필요성 — 그 장악이 무엇을 한 덩어리로 묶어 쥐고 있어 무엇이 막히는가 (3~4문장)",
+  "problem": "문제 정의 — N2B 형식 세 문장으로. NOT/BUT/BECAUSE를 각각 한 문장",
+  "objective": "사업 목표 — 무엇을 무엇으로 대체하는가 (2~3문장)",
+  "scope": ["수행 범위 항목1", "항목2", "항목3", "항목4"],
+  "roles": [
+    {{"who": "전문가 본인", "what": "맡을 역할"}},
+    {{"who": "학회", "what": "맡을 역할"}},
+    {{"who": "필요한 다른 전문분야", "what": "맡을 역할"}}
+  ],
+  "expected": ["기대 효과1", "기대 효과2", "기대 효과3"],
+  "funding_route": ["연계 가능한 사업·발주처 후보1", "후보2"],
+  "to_confirm": ["본인 확인이 필요한 것1", "것2", "것3", "것4"],
+  "next_step": "이 초안을 받은 전문가가 바로 할 수 있는 다음 행동 한 문장"
+}}"""
+            }]
+        )
+        raw = extract_text(response)
+        data = _parse_json_block(raw)
+        if not data:
+            return {"success": False, "raw": raw[:1500], "message": "응답을 해석하지 못했습니다", "usage": rate_info}
+        return {"success": True, "result": data, "usage": rate_info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
